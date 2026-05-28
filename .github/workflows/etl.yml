@@ -35,5 +35,5 @@ jobs:
           FIREBASE_ETL_SECRET:  ${{ secrets.FIREBASE_ETL_SECRET }}
           FIREBASE_USER_UID:    ${{ secrets.FIREBASE_USER_UID }}
           DAYS_BACK: '456'
-          MAX_TX: '500'
+          MAX_TX: '5000'
         run: python etl/etl_pluggy.py

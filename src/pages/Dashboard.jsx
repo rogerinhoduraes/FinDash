@@ -18,7 +18,7 @@ export default function Dashboard() {
   const { user } = useAuth()
   const uid = user?.uid
   const { accounts, loading: aLoading } = useAccounts(uid)
-  const { transactions, loading: tLoading } = useTransactions(uid, { maxDocs: 500 })
+  const { transactions, loading: tLoading } = useTransactions(uid, { maxDocs: 5000 })
   const { bills, loading: bLoading } = useBills(uid)
   const { investments, loading: iLoading } = useInvestments(uid)
 
