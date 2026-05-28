@@ -2,8 +2,11 @@ name: FinDash ETL
 
 on:
   schedule:
-    - cron: '0 * * * *'   # toda hora
-  workflow_dispatch:        # permite rodar manualmente pelo GitHub
+    - cron: '0 * * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - 'etl/**'
 
 jobs:
   etl:
@@ -18,17 +21,17 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Instalar dependências
+      - name: Instalar dependencias
         run: pip install -r etl/requirements.txt
 
       - name: Rodar ETL
         env:
-          MCP_INSTALL_ID:        ${{ secrets.MCP_INSTALL_ID }}
-          MCP_API_KEY:           ${{ secrets.MCP_API_KEY }}
-          PLUGGY_ITEM_IDS:       ${{ secrets.PLUGGY_ITEM_IDS }}
-          FIREBASE_WEBHOOK_URL:  ${{ secrets.FIREBASE_WEBHOOK_URL }}
-          FIREBASE_ETL_SECRET:   ${{ secrets.FIREBASE_ETL_SECRET }}
-          FIREBASE_USER_UID:     ${{ secrets.FIREBASE_USER_UID }}
-          DAYS_BACK:             '90'
-          MAX_TX:                '500'
+          MCP_INSTALL_ID:       ${{ secrets.MCP_INSTALL_ID }}
+          MCP_API_KEY:          ${{ secrets.MCP_API_KEY }}
+          PLUGGY_ITEM_IDS:      ${{ secrets.PLUGGY_ITEM_IDS }}
+          FIREBASE_WEBHOOK_URL: ${{ secrets.FIREBASE_WEBHOOK_URL }}
+          FIREBASE_ETL_SECRET:  ${{ secrets.FIREBASE_ETL_SECRET }}
+          FIREBASE_USER_UID:    ${{ secrets.FIREBASE_USER_UID }}
+          DAYS_BACK: '90'
+          MAX_TX: '500'
         run: python etl/etl_pluggy.py
