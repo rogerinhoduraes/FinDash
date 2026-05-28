@@ -34,6 +34,6 @@ jobs:
           FIREBASE_WEBHOOK_URL: ${{ secrets.FIREBASE_WEBHOOK_URL }}
           FIREBASE_ETL_SECRET:  ${{ secrets.FIREBASE_ETL_SECRET }}
           FIREBASE_USER_UID:    ${{ secrets.FIREBASE_USER_UID }}
-          DAYS_BACK: '90'
+          DAYS_BACK: '456'
           MAX_TX: '500'
         run: python etl/etl_pluggy.py
