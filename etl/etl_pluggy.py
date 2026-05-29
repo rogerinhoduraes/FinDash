@@ -159,11 +159,13 @@ def _f(v) -> float:
 
 
 def _normalize_account_type(raw: str) -> str:
-    """Normaliza tipos da Pluggy para CREDIT | BANK | SAVINGS."""
+    """Normaliza tipos da Pluggy para CREDIT | INVESTMENT | SAVINGS | BANK."""
     t = raw.upper()
     if "CREDIT" in t:
         return "CREDIT"
-    if "SAVING" in t:
+    if "INVEST" in t:
+        return "INVESTMENT"
+    if "SAVING" in t or "POUPANCA" in t or "POUPANÇA" in t:
         return "SAVINGS"
     return "BANK"
 
@@ -274,6 +276,29 @@ _SUBTYPE_TO_TYPE = {
 }
 
 
+def account_as_investment(acc: dict, bank_name: str) -> dict | None:
+    """Converte conta INVESTMENT/SAVINGS em registro de investimento como fallback."""
+    balance = _f(acc.get("balance"))
+    if balance <= 0:
+        return None
+    raw_type = acc.get("type", "BANK").upper()
+    inv_type = "TESOURO" if "SAVING" in raw_type or "POUPANCA" in raw_type else "OUTROS"
+    return {
+        "investment_id": f"acc_{acc.get('id', '')}",
+        "bank":          bank_name,
+        "ticker":        acc.get("name", ""),
+        "name":          acc.get("name", ""),
+        "type":          inv_type,
+        "subtype":       raw_type,
+        "quantity":      None,
+        "value":         balance,
+        "balance":       balance,
+        "status":        "ACTIVE",
+        "annual_rate":   None,
+        "due_date":      None,
+    }
+
+
 def normalize_investment(inv: dict, bank_name: str) -> dict:
     raw_type    = (inv.get("investmentType") or inv.get("type") or "OUTROS").upper()
     raw_subtype = (inv.get("subtype") or "").upper()
@@ -345,8 +370,9 @@ def run_etl() -> None:
             accounts     = [normalize_account(a, bank_name) for a in raw_accounts]
             log.info(f"  Contas: {len(accounts)}")
 
-            all_transactions: list[dict] = []
-            all_bills:        list[dict] = []
+            all_transactions:  list[dict] = []
+            all_bills:         list[dict] = []
+            investment_accs:   list[dict] = []   # fallback accounts
 
             for raw_acc in raw_accounts:
                 acc_id    = raw_acc["id"]
@@ -354,6 +380,11 @@ def run_etl() -> None:
                 acc_type  = _normalize_account_type(raw_type)
                 acc_name  = raw_acc.get("name", "")
                 log.info(f"    [{raw_type}→{acc_type}] {acc_name!r} ({acc_id[:8]})")
+
+                if acc_type in ("INVESTMENT", "SAVINGS"):
+                    investment_accs.append(raw_acc)
+                    log.info(f"      → conta de investimento detectada (balance={raw_acc.get('balance')})")
+                    continue   # não busca transações dessas contas
 
                 raw_txs = client.get_transactions(acc_id, from_date, to_date)
                 all_transactions.extend(normalize_transaction(t, bank_name, acc_id) for t in raw_txs)
@@ -364,9 +395,21 @@ def run_etl() -> None:
                     all_bills.extend(normalize_bill(b, bank_name, acc_id) for b in raw_bills)
                     log.info(f"      Faturas: {len(raw_bills)}")
 
+            # Investimentos via endpoint dedicado
             raw_investments = client.get_investments(item_id)
             investments     = [normalize_investment(i, bank_name) for i in raw_investments]
-            log.info(f"  Investimentos: {len(investments)}")
+            log.info(f"  Investimentos via API: {len(investments)}")
+
+            # Fallback: contas INVESTMENT/SAVINGS não cobertas pelo endpoint
+            if investment_accs:
+                fallback_ids = {i["investment_id"] for i in investments}
+                for raw_acc in investment_accs:
+                    synth = account_as_investment(raw_acc, bank_name)
+                    if synth and synth["investment_id"] not in fallback_ids:
+                        investments.append(synth)
+                        log.info(f"  Fallback investimento: {synth['name']!r} = R$ {synth['balance']:.2f}")
+
+            log.info(f"  Investimentos total: {len(investments)}")
 
             log.info(
                 f"  Total — contas={len(accounts)} tx={len(all_transactions)} "
