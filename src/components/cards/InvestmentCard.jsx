@@ -14,7 +14,8 @@ export function InvestmentCard({ investment, totalPortfolio }) {
   const { ticker, type, quantity, value, balance, status } = investment
   const meta = TYPE_COLORS[type?.toUpperCase()] ?? { label: type, variant: 'secondary' }
   const pct = totalPortfolio ? (balance / totalPortfolio) * 100 : 0
-  const isActive = status !== 'REDEEMED' && status !== 'RESGATADO'
+  const INACTIVE = ['REDEEMED', 'RESGATADO', 'TOTAL_WITHDRAWAL', 'PARTIAL_WITHDRAWAL']
+  const isActive = !INACTIVE.includes(status)
 
   return (
     <Card className={cn('space-y-2', !isActive && 'opacity-60')}>

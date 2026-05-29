@@ -1,9 +1,20 @@
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts'
-import { formatCurrency, formatPercent } from '@/lib/formatters'
+import { formatCurrency, formatPercent, translateInvestmentType } from '@/lib/formatters'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { useMemo } from 'react'
 
-const CLASS_COLORS = { FII: '#4fd9c8', TESOURO: '#f5b731', CDB: '#8a05be', ACAO: '#f05c6e' }
+const CLASS_COLORS = {
+  'FII':            '#4fd9c8',
+  'Ações':          '#f05c6e',
+  'CDB':            '#8a05be',
+  'Tesouro Direto': '#f5b731',
+  'Renda Fixa':     '#f5b731',
+  'LCI':            '#22c55e',
+  'LCA':            '#10b981',
+  'ETF':            '#60a5fa',
+  'Fundo de Investimento': '#a78bfa',
+  'Outros':         '#64748b',
+}
 
 export function InvestmentDonutChart({ investments = [] }) {
   const data = useMemo(() => {
@@ -11,7 +22,7 @@ export function InvestmentDonutChart({ investments = [] }) {
     investments
       .filter((i) => i.status !== 'REDEEMED' && i.status !== 'RESGATADO')
       .forEach((i) => {
-        const cls = i.type?.toUpperCase() ?? 'OUTROS'
+        const cls = translateInvestmentType(i.type) ?? 'Outros'
         map[cls] = (map[cls] ?? 0) + (i.balance ?? i.value ?? 0)
       })
     return Object.entries(map).map(([name, value]) => ({ name, value }))

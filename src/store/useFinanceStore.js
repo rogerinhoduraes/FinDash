@@ -1,29 +1,34 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme)
+}
+
 const useFinanceStore = create(
   persist(
     (set) => ({
-      user: null,
       theme: 'dark',
-      sidebarCollapsed: false,
+      privacyMode: false,
 
-      setUser: (user) => set({ user }),
       setTheme: (theme) => {
+        applyTheme(theme)
         set({ theme })
-        document.documentElement.classList.toggle('dark', theme === 'dark')
       },
-      toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       toggleTheme: () =>
         set((s) => {
           const next = s.theme === 'dark' ? 'light' : 'dark'
-          document.documentElement.classList.toggle('dark', next === 'dark')
+          applyTheme(next)
           return { theme: next }
         }),
+      togglePrivacy: () => set((s) => ({ privacyMode: !s.privacyMode })),
     }),
     {
       name: 'findash-prefs',
-      partialize: (s) => ({ theme: s.theme, sidebarCollapsed: s.sidebarCollapsed }),
+      partialize: (s) => ({ theme: s.theme, privacyMode: s.privacyMode }),
+      onRehydrateStorage: () => (state) => {
+        if (state) applyTheme(state.theme ?? 'dark')
+      },
     }
   )
 )

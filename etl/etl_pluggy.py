@@ -7,6 +7,7 @@ via proxy MCP.AI e envia ao webhook do Firebase.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import uuid
 import logging
@@ -70,9 +71,20 @@ class MCPClient:
         except Exception:
             return f"Banco_{item_id[:8]}"
 
+    @staticmethod
+    def _extract_list(r: Any, *keys: str) -> list:
+        """Extrai lista de resposta MCP independente da estrutura retornada."""
+        if isinstance(r, list):
+            return r
+        for k in keys:
+            v = r.get(k)
+            if isinstance(v, list):
+                return v
+        return []
+
     def get_accounts(self, item_id: str) -> list[dict]:
         r = self._call("openfinance_list_accounts", {"item": item_id})
-        return r.get("results") or r.get("accounts", [])
+        return self._extract_list(r, "results", "accounts")
 
     def get_transactions(self, account_id: str, from_date: str, to_date: str) -> list[dict]:
         all_txs: list[dict] = []
@@ -85,9 +97,9 @@ class MCPClient:
                 "page": page,
                 "page_size": 500,
             })
-            txs = r.get("results") or r.get("transactions", [])
+            txs = self._extract_list(r, "results", "transactions")
             all_txs.extend(txs)
-            total_pages = r.get("totalPages", 1)
+            total_pages = r.get("totalPages", 1) if isinstance(r, dict) else 1
             if page >= total_pages or not txs:
                 break
             page += 1
@@ -95,23 +107,47 @@ class MCPClient:
 
     def get_bills(self, account_id: str) -> list[dict]:
         try:
-            r = self._call("openfinance_list_credit_card_bills", {"account_id": account_id})
-            return r.get("bills", [])
-        except Exception:
+            r = self._call("openfinance_list_credit_card_bills", {
+                "account_id": account_id,
+                "page_size": 100,
+            })
+            return self._extract_list(r, "results", "bills")
+        except Exception as e:
+            log.warning(f"get_bills falhou para conta {account_id[:8]}: {e}")
             return []
 
     def get_investments(self, item_id: str) -> list[dict]:
-        try:
-            r = self._call("openfinance_list_investments", {"item": item_id})
-            return r.get("investments", [])
-        except Exception:
-            return []
+        """Busca investimentos com paginação, tentando dois nomes de parâmetro."""
+        all_inv: list[dict] = []
+        for param_key in ("item_id", "item"):
+            try:
+                page = 1
+                while True:
+                    r = self._call("openfinance_list_investments", {
+                        param_key: item_id,
+                        "page": page,
+                        "page_size": 100,
+                    })
+                    batch = self._extract_list(r, "results", "investments")
+                    all_inv.extend(batch)
+                    total_pages = r.get("totalPages", 1) if isinstance(r, dict) else 1
+                    if page >= total_pages or not batch:
+                        break
+                    page += 1
+                if all_inv:
+                    log.info(f"  get_investments OK via param '{param_key}': {len(all_inv)} itens")
+                    return all_inv
+            except Exception as e:
+                log.warning(f"  get_investments '{param_key}' falhou para {item_id[:8]}: {e}")
+        log.warning(f"  get_investments: nenhum dado obtido para item {item_id[:8]}")
+        return []
 
     def get_investment_transactions(self, investment_id: str) -> list[dict]:
         try:
             r = self._call("openfinance_list_investment_transactions", {"investment_id": investment_id})
-            return r.get("transactions", [])
-        except Exception:
+            return self._extract_list(r, "transactions", "results")
+        except Exception as e:
+            log.warning(f"get_investment_transactions falhou: {e}")
             return []
 
 
@@ -122,13 +158,24 @@ def _f(v) -> float:
         return 0.0
 
 
+def _normalize_account_type(raw: str) -> str:
+    """Normaliza tipos da Pluggy para CREDIT | BANK | SAVINGS."""
+    t = raw.upper()
+    if "CREDIT" in t:
+        return "CREDIT"
+    if "SAVING" in t:
+        return "SAVINGS"
+    return "BANK"
+
+
 def normalize_account(acc: dict, bank_name: str) -> dict:
     cd = acc.get("creditData") or {}
+    raw_type = acc.get("type", "BANK")
     return {
         "account_id":      acc.get("id"),
         "bank_name":       bank_name,
         "bank_connector":  acc.get("bankData", {}).get("transferNumber", "") if isinstance(acc.get("bankData"), dict) else "",
-        "account_type":    acc.get("type", "BANK"),
+        "account_type":    _normalize_account_type(raw_type),
         "name":            acc.get("name", ""),
         "balance":         _f(acc.get("balance")),
         "limit":           _f(cd.get("creditLimit")) or None,
@@ -146,22 +193,52 @@ def normalize_transaction(tx: dict, bank_name: str, account_id: str) -> dict:
     elif tx_type == "CREDIT":
         amount = abs(amount)
 
+    # Pluggy retorna metadados de parcelamento em creditCardMetadata
+    cc_meta = tx.get("creditCardMetadata") or {}
+    installment_number = cc_meta.get("installmentNumber") or cc_meta.get("number")
+    installment_total  = cc_meta.get("totalInstallments") or cc_meta.get("total")
+    bill_id            = cc_meta.get("billId") or cc_meta.get("creditCardBillId")
+
     return {
-        "transaction_id": tx.get("id"),
-        "bank":           bank_name,
-        "account_id":     account_id,
-        "date":           (tx.get("date") or "")[:10],
-        "description":    tx.get("description", ""),
-        "amount":         amount,
-        "category":       tx.get("category", "Outros"),
-        "balance":        tx.get("balance"),
-        "currency":       tx.get("currencyCode", "BRL"),
-        "type":           tx_type,
-        "status":         tx.get("status", "POSTED"),
+        "transaction_id":      tx.get("id"),
+        "bank":                bank_name,
+        "account_id":          account_id,
+        "date":                (tx.get("date") or "")[:10],
+        "description":         tx.get("description", ""),
+        "amount":              amount,
+        "category":            tx.get("category", "Outros"),
+        "balance":             tx.get("balance"),
+        "currency":            tx.get("currencyCode", "BRL"),
+        "type":                tx_type,
+        "status":              tx.get("status", "POSTED"),
+        "installment_number":  installment_number,
+        "installment_total":   installment_total,
+        "bill_id":             bill_id,
     }
 
 
+_INSTALLMENT_RE = re.compile(r'\b\d+\s*/\s*\d+\b|PARC\b|PARCELA\b|PARCELAMENTO\b', re.IGNORECASE)
+
+
+def _item_is_installment(item: dict) -> bool:
+    if item.get("installments"):
+        return True
+    return bool(_INSTALLMENT_RE.search(item.get("description", "")))
+
+
+def _item_description(item: dict) -> str:
+    """A Pluggy às vezes coloca a descrição direto, às vezes em attributes."""
+    return (
+        item.get("description")
+        or (item.get("attributes") or {}).get("description")
+        or (item.get("attributes") or {}).get("name")
+        or item.get("name")
+        or ""
+    )
+
+
 def normalize_bill(bill: dict, bank_name: str, account_id: str) -> dict:
+    raw_items = bill.get("finance") or bill.get("items") or []
     return {
         "bill_id":    bill.get("id"),
         "bank":       bank_name,
@@ -169,22 +246,46 @@ def normalize_bill(bill: dict, bank_name: str, account_id: str) -> dict:
         "due_date":   (bill.get("dueDate") or "")[:10],
         "close_date": (bill.get("closeDate") or "")[:10] or None,
         "total":      _f(bill.get("totalAmount")),
-        "minimum":    _f(bill.get("minimumPayment")) or None,
-        "status":     bill.get("paymentStatus") or bill.get("payment_status", "OPEN"),
+        "minimum":    _f(bill.get("minimumPaymentAmount") or bill.get("minimumPayment")) or None,
+        "status":     bill.get("payment_status") or bill.get("paymentStatus", "OPEN"),
         "items":      [
-            {"description": i.get("description", ""), "amount": i.get("amount", 0.0)}
-            for i in (bill.get("finance") or bill.get("items") or [])
+            {
+                "description":    _item_description(i),
+                "amount":         _f(i.get("amount")),
+                "type":           i.get("type", ""),
+                "date":           (i.get("date") or "")[:10] or None,
+                "is_installment": _item_is_installment(i),
+            }
+            for i in raw_items
         ],
     }
 
 
+_SUBTYPE_TO_TYPE = {
+    "REAL_ESTATE_FUND": "FII",
+    "CDB":              "CDB",
+    "LCI":              "LCI",
+    "LCA":              "LCA",
+    "TREASURY":         "TESOURO",
+    "TESOURO_DIRETO":   "TESOURO",
+    "DEBENTURE":        "RENDA_FIXA",
+    "CRI":              "RENDA_FIXA",
+    "CRA":              "RENDA_FIXA",
+}
+
+
 def normalize_investment(inv: dict, bank_name: str) -> dict:
+    raw_type    = (inv.get("investmentType") or inv.get("type") or "OUTROS").upper()
+    raw_subtype = (inv.get("subtype") or "").upper()
+    final_type  = _SUBTYPE_TO_TYPE.get(raw_subtype, raw_type)
+
     return {
         "investment_id": inv.get("id"),
         "bank":          bank_name,
         "ticker":        inv.get("code") or inv.get("name", ""),
         "name":          inv.get("name", ""),
-        "type":          (inv.get("investmentType") or inv.get("type") or "OUTROS").upper(),
+        "type":          final_type,
+        "subtype":       raw_subtype or None,
         "quantity":      inv.get("quantity"),
         "value":         _f(inv.get("value")) or None,
         "balance":       _f(inv.get("balance")),
@@ -248,16 +349,20 @@ def run_etl() -> None:
             all_bills:        list[dict] = []
 
             for raw_acc in raw_accounts:
-                acc_id   = raw_acc["id"]
-                acc_type = raw_acc.get("type", "BANK")
+                acc_id    = raw_acc["id"]
+                raw_type  = raw_acc.get("type", "BANK")
+                acc_type  = _normalize_account_type(raw_type)
+                acc_name  = raw_acc.get("name", "")
+                log.info(f"    [{raw_type}→{acc_type}] {acc_name!r} ({acc_id[:8]})")
 
                 raw_txs = client.get_transactions(acc_id, from_date, to_date)
                 all_transactions.extend(normalize_transaction(t, bank_name, acc_id) for t in raw_txs)
-                log.info(f"    [{acc_type}] {acc_id[:8]} — {len(raw_txs)} transações")
+                log.info(f"      Transações: {len(raw_txs)}")
 
                 if acc_type == "CREDIT":
                     raw_bills = client.get_bills(acc_id)
                     all_bills.extend(normalize_bill(b, bank_name, acc_id) for b in raw_bills)
+                    log.info(f"      Faturas: {len(raw_bills)}")
 
             raw_investments = client.get_investments(item_id)
             investments     = [normalize_investment(i, bank_name) for i in raw_investments]

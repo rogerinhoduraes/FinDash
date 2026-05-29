@@ -35,7 +35,7 @@ export function BillsTable({ bills = [], loading }) {
   const sorted = [...bills].sort((a, b) => {
     const da = a.due_date ? parseISO(a.due_date) : new Date(0)
     const db_ = b.due_date ? parseISO(b.due_date) : new Date(0)
-    return da - db_
+    return db_ - da
   })
 
   return (
@@ -108,33 +108,67 @@ export function BillsTable({ bills = [], loading }) {
         </table>
       </div>
 
-      {selected && (
-        <Dialog
-          open={!!selected}
-          onClose={() => setSelected(null)}
-          title={`Fatura ${getBankMeta(selected.bank).label} — ${formatDate(selected.due_date)}`}
-        >
-          <div className="space-y-3 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Total</span>
-              <span className="font-mono font-semibold text-[#f05c6e]">{formatCurrency(selected.total)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Status</span>
-              <div className="flex items-center gap-1.5">
-                <StatusIcon status={selected.status} />
-                <span>{statusLabel(selected.status)}</span>
+      {selected && (() => {
+        const items = selected.items ?? []
+        const isInstallment = (item) =>
+          item.is_installment ?? /\b\d+\s*\/\s*\d+\b|PARC\b|PARCELA\b|PARCELAMENTO\b/i.test(item.description ?? '')
+        const installments = items.filter(isInstallment)
+        const regular = items.filter((i) => !isInstallment(i))
+        const sumInstallments = installments.reduce((s, i) => s + (i.amount ?? 0), 0)
+        const sumRegular = regular.reduce((s, i) => s + (i.amount ?? 0), 0)
+
+        return (
+          <Dialog
+            open={!!selected}
+            onClose={() => setSelected(null)}
+            title={`Fatura ${getBankMeta(selected.bank).label} — ${formatDate(selected.due_date)}`}
+          >
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Total</span>
+                <span className="font-mono font-semibold text-[#f05c6e]">{formatCurrency(selected.total)}</span>
               </div>
-            </div>
-            {selected.items?.map((item, i) => (
-              <div key={i} className="flex justify-between border-t border-border pt-2">
-                <span className="text-muted-foreground text-xs">{item.description}</span>
-                <span className="font-mono text-xs">{formatCurrency(item.amount)}</span>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Status</span>
+                <div className="flex items-center gap-1.5">
+                  <StatusIcon status={selected.status} />
+                  <span>{statusLabel(selected.status)}</span>
+                </div>
               </div>
-            ))}
-          </div>
-        </Dialog>
-      )}
+
+              {regular.length > 0 && (
+                <div className="border-t border-border pt-3 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Compras à vista</span>
+                    <span className="font-mono text-xs text-muted-foreground">{formatCurrency(sumRegular)}</span>
+                  </div>
+                  {regular.map((item, i) => (
+                    <div key={i} className="flex justify-between">
+                      <span className="text-muted-foreground text-xs">{item.description}</span>
+                      <span className="font-mono text-xs">{formatCurrency(item.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {installments.length > 0 && (
+                <div className="border-t border-border pt-3 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Parcelamentos</span>
+                    <span className="font-mono text-xs text-muted-foreground">{formatCurrency(sumInstallments)}</span>
+                  </div>
+                  {installments.map((item, i) => (
+                    <div key={i} className="flex justify-between">
+                      <span className="text-muted-foreground text-xs">{item.description}</span>
+                      <span className="font-mono text-xs">{formatCurrency(item.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Dialog>
+        )
+      })()}
     </>
   )
 }

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { formatCurrency, formatDate, getBankMeta } from '@/lib/formatters'
+import { formatCurrency, formatDate, getBankMeta, translateCategory } from '@/lib/formatters'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -34,6 +34,8 @@ export function TransactionsTable({ transactions = [], loading }) {
   const [bankFilter, setBankFilter] = useState(null)
   const [catFilter, setCatFilter] = useState(null)
   const [typeFilter, setTypeFilter] = useState(null)
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [page, setPage] = useState(0)
 
   const banks = useMemo(() => {
@@ -43,7 +45,7 @@ export function TransactionsTable({ transactions = [], loading }) {
 
   const categories = useMemo(() => {
     const s = new Set(transactions.map((t) => t.category).filter(Boolean))
-    return [...s].sort().map((c) => ({ value: c, label: c }))
+    return [...s].sort().map((c) => ({ value: c, label: translateCategory(c) }))
   }, [transactions])
 
   const filtered = useMemo(() => {
@@ -53,11 +55,13 @@ export function TransactionsTable({ transactions = [], loading }) {
       list = list.filter((t) => (t.description ?? '').toLowerCase().includes(q))
     }
     if (bankFilter) list = list.filter((t) => t.bank === bankFilter)
-    if (catFilter) list = list.filter((t) => t.category === catFilter)
+    if (catFilter)  list = list.filter((t) => t.category === catFilter)
     if (typeFilter === 'entrada') list = list.filter((t) => (t.amount ?? 0) > 0)
-    if (typeFilter === 'saida') list = list.filter((t) => (t.amount ?? 0) < 0)
+    if (typeFilter === 'saida')   list = list.filter((t) => (t.amount ?? 0) < 0)
+    if (dateFrom) list = list.filter((t) => (t.date ?? '') >= dateFrom)
+    if (dateTo)   list = list.filter((t) => (t.date ?? '') <= dateTo)
     return list
-  }, [transactions, search, bankFilter, catFilter, typeFilter])
+  }, [transactions, search, bankFilter, catFilter, typeFilter, dateFrom, dateTo])
 
   const pages = Math.ceil(filtered.length / PAGE_SIZE)
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
@@ -103,6 +107,32 @@ export function TransactionsTable({ transactions = [], loading }) {
           placeholder="Tipo"
           className="w-32"
         />
+      </div>
+
+      {/* Date range + export */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted-foreground">Período:</span>
+        <input
+          type="date"
+          value={dateFrom}
+          onChange={(e) => { setDateFrom(e.target.value); setPage(0) }}
+          className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+        <span className="text-xs text-muted-foreground">até</span>
+        <input
+          type="date"
+          value={dateTo}
+          onChange={(e) => { setDateTo(e.target.value); setPage(0) }}
+          className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+        {(dateFrom || dateTo) && (
+          <button
+            onClick={() => { setDateFrom(''); setDateTo(''); setPage(0) }}
+            className="text-xs text-muted-foreground hover:text-foreground underline"
+          >
+            limpar
+          </button>
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -144,7 +174,7 @@ export function TransactionsTable({ transactions = [], loading }) {
                     </td>
                     <td className="px-4 py-3 max-w-xs truncate">{t.description}</td>
                     <td className="px-4 py-3 hidden sm:table-cell">
-                      <Badge variant="secondary" className="text-[10px]">{t.category ?? '—'}</Badge>
+                      <Badge variant="secondary" className="text-[10px]">{translateCategory(t.category)}</Badge>
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -166,9 +196,9 @@ export function TransactionsTable({ transactions = [], loading }) {
       </div>
 
       {/* Pagination */}
-      {pages > 1 && (
+      {pages > 0 && (
         <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>{filtered.length} transações · página {page + 1} de {pages}</span>
+          <span>{filtered.length} transações{pages > 1 ? ` · página ${page + 1} de ${pages}` : ''}</span>
           <div className="flex gap-1">
             <Button variant="outline" size="icon" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
               <ChevronLeft className="h-4 w-4" />

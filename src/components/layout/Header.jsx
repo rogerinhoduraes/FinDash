@@ -1,79 +1,101 @@
-import { Sun, Moon, LogOut, User } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import useFinanceStore from '@/store/useFinanceStore'
 import { useEtlRuns } from '@/hooks/useEtlRuns'
-import { formatRelativeTime } from '@/lib/formatters'
-import { Badge } from '@/components/ui/badge'
-import { useState } from 'react'
+import { formatDate } from '@/lib/formatters'
+import useFinanceStore from '@/store/useFinanceStore'
 
-export function Header() {
+const PAGE_META = {
+  '/':              ['Visão geral',       'Dashboard'],
+  '/contas':        ['Open Finance',      'Contas conectadas'],
+  '/transacoes':    ['Movimentações',     'Transações'],
+  '/faturas':       ['Cartões de crédito','Faturas'],
+  '/investimentos': ['Carteira',          'Investimentos'],
+  '/configuracoes': ['Conta & dados',     'Configurações'],
+}
+
+export function Topbar() {
   const { user, signOut } = useAuth()
-  const { theme, toggleTheme } = useFinanceStore()
-  const [menuOpen, setMenuOpen] = useState(false)
-  const { latest } = useEtlRuns(user?.uid, 1)
+  const uid = user?.uid
+  const { pathname } = useLocation()
+  const { theme, toggleTheme, privacyMode, togglePrivacy } = useFinanceStore()
+  const { latest, runs } = useEtlRuns(uid, 1)
 
-  const statusVariant = latest?.status === 'success' ? 'success'
-    : latest?.status === 'error' ? 'danger'
-    : 'warning'
+  const [kicker, title] = PAGE_META[pathname] ?? ['FinDash', 'Painel']
+  const firstName = user?.displayName?.split(' ')[0] ?? user?.email?.split('@')[0] ?? 'Você'
+  const displayTitle = pathname === '/' ? `Bom dia, ${firstName}` : title
+
+  const syncTime = latest?.completedAt ?? latest?.startedAt
+  const syncLabel = syncTime
+    ? formatDate(syncTime?.toDate ? syncTime.toDate() : new Date(syncTime), 'dd/MM HH:mm')
+    : '--:--'
+
+  const initials = (user?.displayName ?? user?.email ?? 'U')
+    .split(' ')
+    .map((s) => s[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase()
 
   return (
-    <header className="flex h-16 items-center justify-between border-b border-border bg-card px-4 md:px-6">
-      {/* ETL status */}
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        {latest ? (
-          <>
-            <Badge variant={statusVariant}>
-              {latest.status === 'success' ? 'Atualizado' : latest.status === 'error' ? 'Erro' : 'Processando'}
-            </Badge>
-            <span className="hidden sm:inline">{formatRelativeTime(latest.completedAt ?? latest.startedAt)}</span>
-          </>
-        ) : (
-          <Badge variant="secondary">Aguardando ETL</Badge>
-        )}
+    <header className="topbar">
+      <div>
+        <div className="page-kicker">{kicker}</div>
+        <h1>{displayTitle}</h1>
       </div>
 
-      {/* Right controls */}
-      <div className="flex items-center gap-2">
-        {/* Theme toggle */}
+      <div className="topbar-actions">
+        <div className="status-pill" title="Última sincronização">
+          <span className="dot" />
+          <span>Sincronizado</span>
+          <span className="ts">{syncLabel}</span>
+        </div>
+
         <button
-          onClick={toggleTheme}
-          className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label="Alternar tema"
+          className={'icon-btn' + (privacyMode ? ' on' : '')}
+          onClick={togglePrivacy}
+          title={privacyMode ? 'Exibir valores' : 'Ocultar valores'}
         >
-          {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          {privacyMode ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9.9 5.2A9.5 9.5 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 3.9M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.3 9.3 0 0 0 4.4-1.1"/>
+              <path d="M3 3l18 18"/>
+              <path d="M9.5 9.6a3 3 0 0 0 4.2 4.2"/>
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+          )}
         </button>
 
-        {/* User menu */}
-        <div className="relative">
-          <button
-            onClick={() => setMenuOpen((o) => !o)}
-            className="flex items-center gap-2 rounded-lg p-1.5 hover:bg-accent"
-            aria-label="Menu do usuário"
-          >
-            {user?.photoURL ? (
-              <img src={user.photoURL} alt="Avatar" className="h-7 w-7 rounded-full object-cover" />
-            ) : (
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-xs text-primary-foreground font-medium">
-                {user?.displayName?.[0]?.toUpperCase() ?? user?.email?.[0]?.toUpperCase() ?? <User className="h-3 w-3" />}
-              </div>
-            )}
-            <span className="hidden sm:block text-sm font-medium">
-              {user?.displayName?.split(' ')[0] ?? user?.email?.split('@')[0]}
-            </span>
-          </button>
-
-          {menuOpen && (
-            <div className="absolute right-0 top-10 z-20 min-w-40 rounded-xl border border-border bg-card p-1 shadow-lg">
-              <button
-                onClick={() => { signOut(); setMenuOpen(false) }}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                <LogOut className="h-4 w-4" />
-                Sair
-              </button>
-            </div>
+        <button
+          className="icon-btn"
+          onClick={toggleTheme}
+          title={theme === 'dark' ? 'Tema claro' : 'Tema escuro'}
+        >
+          {theme === 'dark' ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="4"/>
+              <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+            </svg>
           )}
-        </div>
+        </button>
+
+        <button
+          className="avatar"
+          onClick={signOut}
+          title="Sair da conta"
+          style={{ cursor: 'pointer', border: 'none', padding: 0 }}
+        >
+          {user?.photoURL ? (
+            <img src={user.photoURL} alt="Avatar" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+          ) : initials}
+        </button>
       </div>
     </header>
   )

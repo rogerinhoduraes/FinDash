@@ -1,5 +1,5 @@
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts'
-import { formatCurrency, formatPercent } from '@/lib/formatters'
+import { formatCurrency, formatPercent, translateCategory } from '@/lib/formatters'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { useMemo } from 'react'
 import { parseISO, isThisMonth } from 'date-fns'
@@ -18,7 +18,7 @@ export function CategoryDonutChart({ transactions = [] }) {
     })
     const map = {}
     thisMonth.forEach((t) => {
-      const cat = t.category ?? 'Outros'
+      const cat = translateCategory(t.category ?? 'Outros')
       map[cat] = (map[cat] ?? 0) + Math.abs(t.amount)
     })
     return Object.entries(map)

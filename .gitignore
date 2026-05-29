@@ -6,3 +6,4 @@ functions/node_modules
 etl/.env
 *.log
 .firebase
+functions/.env

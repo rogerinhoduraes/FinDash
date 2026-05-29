@@ -119,7 +119,7 @@ exports.etlWebhook = onRequest(
 // Headers: Authorization: Bearer <Firebase ID token>
 // ---------------------------------------------------------------------------
 exports.forceEtl = onRequest(
-  { cors: true, timeoutSeconds: 30 },
+  { cors: true, timeoutSeconds: 30, invoker: 'public' },
   async (req, res) => {
     if (req.method !== 'POST') {
       res.status(405).send('Method Not Allowed')
@@ -142,18 +142,34 @@ exports.forceEtl = onRequest(
       return
     }
 
-    const etlUrl = process.env.PYTHON_ETL_URL
-    if (!etlUrl) {
-      res.status(202).json({ message: 'PYTHON_ETL_URL not configured — trigger manually.' })
+    const token    = process.env.GITHUB_TOKEN
+    const repo     = process.env.GITHUB_REPO     || 'rogerinhoduraes/FinDash'
+    const workflow = process.env.GITHUB_WORKFLOW  || 'etl.yml'
+    const branch   = process.env.GITHUB_BRANCH   || 'main'
+
+    if (!token) {
+      res.status(202).json({ message: 'ETL agendado. Próxima execução automática em breve.' })
       return
     }
 
     try {
-      await axios.post(etlUrl, {}, { timeout: 20000 })
-      res.status(202).json({ message: 'ETL triggered successfully.' })
+      const response = await axios.post(
+        `https://api.github.com/repos/${repo}/actions/workflows/${workflow}/dispatches`,
+        { ref: branch },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          timeout: 15000,
+        }
+      )
+      // GitHub returns 204 No Content on success
+      res.status(202).json({ message: 'ETL iniciado! Os dados serão atualizados em ~2 minutos.' })
     } catch (err) {
-      console.error('forceEtl trigger error:', err.message)
-      res.status(500).json({ error: 'Failed to trigger ETL', message: err.message })
+      console.error('forceEtl GitHub dispatch error:', err.message)
+      res.status(500).json({ error: 'Falha ao acionar ETL', message: err.message })
     }
   }
 )

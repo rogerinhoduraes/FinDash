@@ -11,25 +11,20 @@ import {
 } from 'firebase/auth'
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { auth, db } from '@/lib/firebase'
-import useFinanceStore from '@/store/useFinanceStore'
-
 const googleProvider = new GoogleAuthProvider()
+googleProvider.setCustomParameters({ prompt: 'select_account' })
 
 export function useAuth() {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const setStoreUser = useFinanceStore((s) => s.setUser)
-
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       if (fbUser) {
         await ensureUserProfile(fbUser)
         setUser(fbUser)
-        setStoreUser(fbUser)
       } else {
         setUser(null)
-        setStoreUser(null)
       }
       setLoading(false)
     })
