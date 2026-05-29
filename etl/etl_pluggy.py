@@ -187,7 +187,7 @@ def normalize_account(acc: dict, bank_name: str) -> dict:
     }
 
 
-def normalize_transaction(tx: dict, bank_name: str, account_id: str) -> dict:
+def normalize_transaction(tx: dict, bank_name: str, account_id: str, account_type: str = "BANK") -> dict:
     amount = float(tx.get("amount", 0) or 0)
     tx_type = tx.get("type", "")
     if tx_type == "DEBIT":
@@ -205,6 +205,7 @@ def normalize_transaction(tx: dict, bank_name: str, account_id: str) -> dict:
         "transaction_id":      tx.get("id"),
         "bank":                bank_name,
         "account_id":          account_id,
+        "account_type":        account_type,
         "date":                (tx.get("date") or "")[:10],
         "description":         tx.get("description", ""),
         "amount":              amount,
@@ -387,7 +388,7 @@ def run_etl() -> None:
                     continue   # não busca transações dessas contas
 
                 raw_txs = client.get_transactions(acc_id, from_date, to_date)
-                all_transactions.extend(normalize_transaction(t, bank_name, acc_id) for t in raw_txs)
+                all_transactions.extend(normalize_transaction(t, bank_name, acc_id, acc_type) for t in raw_txs)
                 log.info(f"      Transações: {len(raw_txs)}")
 
                 if acc_type == "CREDIT":

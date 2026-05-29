@@ -5,7 +5,7 @@ import { useAccounts } from '@/hooks/useAccounts'
 import { formatCurrency, formatDate, getBankMeta, translateCategory } from '@/lib/formatters'
 import useFinanceStore from '@/store/useFinanceStore'
 
-const PAGE_SIZE = 50
+const PAGE_SIZE = 10
 
 function exportCSV(rows) {
   const head = ['Data','Descrição','Categoria','Banco','Valor']
@@ -26,7 +26,7 @@ export default function Transacoes() {
   const { transactions, loading: tLoading } = useTransactions(user?.uid, { maxDocs: 10000 })
   const { accounts, loading: aLoading } = useAccounts(user?.uid)
   const { privacyMode } = useFinanceStore()
-  const [tab, setTab] = useState('banco')
+  const [tab, setTab] = useState('cartao')
   const [q, setQ] = useState('')
   const [bank, setBank] = useState('')
   const [type, setType] = useState('')
@@ -44,7 +44,10 @@ export default function Transacoes() {
 
   const sourceFiltered = useMemo(() => {
     return transactions.filter((t) => {
-      const isCredit = accountTypeMap[t.account_id] === 'CREDIT'
+      if (Math.abs(Number(t.amount ?? 0)) < 0.005) return false
+      // prefer account_type stored on transaction; fall back to accountTypeMap
+      const accType = t.account_type || accountTypeMap[t.account_id] || 'BANK'
+      const isCredit = accType === 'CREDIT'
       return tab === 'cartao' ? isCredit : !isCredit
     })
   }, [transactions, accountTypeMap, tab])
@@ -65,19 +68,19 @@ export default function Transacoes() {
   const totalIn  = filtered.filter((t) => (t.amount ?? 0) > 0).reduce((s, t) => s + Math.abs(t.amount), 0)
   const totalOut = filtered.filter((t) => (t.amount ?? 0) < 0).reduce((s, t) => s + Math.abs(t.amount), 0)
 
-  const creditCount = transactions.filter((t) => accountTypeMap[t.account_id] === 'CREDIT').length
-  const bankCount   = transactions.length - creditCount
+  const creditCount = transactions.filter((t) => (t.account_type || accountTypeMap[t.account_id] || 'BANK') === 'CREDIT').length
+  const bankCount   = transactions.filter((t) => (t.account_type || accountTypeMap[t.account_id] || 'BANK') !== 'CREDIT').length
 
   return (
     <div className="fade-up" style={{ display: 'grid', gap: 18 }}>
       {/* Tabs + totals */}
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div className="tab-row">
-          <div className={'tab' + (tab === 'banco' ? ' active' : '')} onClick={() => { setTab('banco'); setPage(0) }}>
-            Conta corrente <span className="nav-badge" style={{ marginLeft: 6 }}>{bankCount}</span>
-          </div>
           <div className={'tab' + (tab === 'cartao' ? ' active' : '')} onClick={() => { setTab('cartao'); setPage(0) }}>
             Cartão <span className="nav-badge" style={{ marginLeft: 6 }}>{creditCount}</span>
+          </div>
+          <div className={'tab' + (tab === 'banco' ? ' active' : '')} onClick={() => { setTab('banco'); setPage(0) }}>
+            Conta corrente <span className="nav-badge" style={{ marginLeft: 6 }}>{bankCount}</span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
