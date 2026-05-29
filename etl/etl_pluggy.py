@@ -43,6 +43,38 @@ DAYS_BACK = int(os.environ.get("DAYS_BACK", "90"))
 MAX_TX    = int(os.environ.get("MAX_TX", "500"))
 
 
+_BANK_CANONICAL = {
+    "nubank":           "Nubank",
+    "nu pagamentos":    "Nubank",
+    "nu financeira":    "Nubank",
+    "santander":        "Santander",
+    "banco santander":  "Santander",
+    "inter":            "Inter",
+    "banco inter":      "Inter",
+    "pagseguro":        "PagSeguro",
+    "bradesco":         "Bradesco",
+    "itau":             "Itaú",
+    "itaú":             "Itaú",
+    "caixa":            "Caixa",
+    "bb":               "Banco do Brasil",
+    "banco do brasil":  "Banco do Brasil",
+    "sicoob":           "Sicoob",
+    "sicredi":          "Sicredi",
+    "c6":               "C6 Bank",
+    "xp":               "XP",
+    "btg":              "BTG",
+    "mercado pago":     "Mercado Pago",
+    "picpay":           "PicPay",
+}
+
+def _canonical_bank(raw: str) -> str:
+    key = raw.lower().strip()
+    for alias, name in _BANK_CANONICAL.items():
+        if alias in key:
+            return name
+    return raw
+
+
 class MCPClient:
     def __init__(self) -> None:
         self.session = requests.Session()
@@ -67,7 +99,8 @@ class MCPClient:
     def get_bank_name(self, item_id: str) -> str:
         try:
             r = self._call("openfinance_get_item_status", {"item": item_id})
-            return (r.get("connector") or {}).get("name") or r.get("connector_name") or f"Banco_{item_id[:8]}"
+            raw = (r.get("connector") or {}).get("name") or r.get("connector_name") or f"Banco_{item_id[:8]}"
+            return _canonical_bank(raw)
         except Exception:
             return f"Banco_{item_id[:8]}"
 
