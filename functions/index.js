@@ -24,6 +24,21 @@ const db = getFirestore()
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
+// Accept either a calendar day (YYYY-MM-DD) or a full ISO timestamp, so the
+// schema keeps validating during the ETL date-format migration.
+const dateLike = Joi.string().pattern(/^\d{4}-\d{2}-\d{2}/)
+
+// Per-record contract for the fields the UI actually depends on. unknown(true)
+// keeps it forgiving of extra fields while still catching real schema drift
+// (e.g. amount arriving as a string, missing ids, malformed dates).
+const transactionSchema = Joi.object({
+  transaction_id: Joi.string().required(),
+  amount: Joi.number().required(),
+  date: dateLike.allow(null, ''),
+  account_type: Joi.string().valid('BANK', 'CREDIT', 'INVESTMENT'),
+  bank: Joi.string().allow(null, ''),
+}).unknown(true)
+
 const etlSchema = Joi.object({
   uid: Joi.string().required(),
   run_id: Joi.string().allow(null, ''),
@@ -31,7 +46,7 @@ const etlSchema = Joi.object({
   status: Joi.string().valid('running', 'success', 'error'),
   error: Joi.string().allow(null, ''),
   accounts: Joi.array().items(Joi.object().unknown(true)).default([]),
-  transactions: Joi.array().items(Joi.object().unknown(true)).default([]),
+  transactions: Joi.array().items(transactionSchema).default([]),
   bills: Joi.array().items(Joi.object().unknown(true)).default([]),
   investments: Joi.array().items(Joi.object().unknown(true)).default([]),
 }).unknown(true)

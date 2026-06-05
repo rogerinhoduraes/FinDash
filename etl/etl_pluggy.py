@@ -11,7 +11,7 @@ import re
 import sys
 import uuid
 import logging
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from typing import Any
 
 import requests
@@ -47,6 +47,7 @@ _BANK_CANONICAL = {
     "nubank":           "Nubank",
     "nu pagamentos":    "Nubank",
     "nu financeira":    "Nubank",
+    "nuco":             "Nubank",
     "santander":        "Santander",
     "banco santander":  "Santander",
     "inter":            "Inter",
@@ -65,6 +66,12 @@ _BANK_CANONICAL = {
     "btg":              "BTG",
     "mercado pago":     "Mercado Pago",
     "picpay":           "PicPay",
+    "avenue":           "Avenue",
+    "nomad":            "Nomad",
+    "wise":             "Wise",
+    "revolut":          "Revolut",
+    "safra":            "Safra",
+    "banrisul":         "Banrisul",
 }
 
 def _canonical_bank(raw: str) -> str:
@@ -73,6 +80,65 @@ def _canonical_bank(raw: str) -> str:
         if alias in key:
             return name
     return raw
+
+
+def merchant_key(description: str) -> str:
+    """
+    Gera uma 'impressão digital' do mercador.
+    Sincronizado com a lógica do frontend (src/lib/categories.js).
+    """
+    if not description:
+        return ""
+    
+    d = description.lower()
+    # Remove prefixos e sufixos de ruído bancário comuns
+    d = re.sub(r"^(pg\s*\*|pag\s*\*|p\s*\*|compra\s+|pagto\s+|pgto\s+|venda\s+|transf\s+|pix\s+enviado\s+|pix\s+recebido\s+)", "", d)
+    d = re.sub(r"(\s+\d{2}/\d{2}|\s+\d{4}|\s+[a-z]{2}$)", "", d) # datas e UF no final
+    
+    # Substitui símbolos por espaços
+    d = re.sub(r"[\*\-\/#@]", " ", d)
+    
+    words = d.strip().split()
+    meaningful: list[str] = []
+    
+    noise = {"sao", "pau", "sp", "rj", "mg", "bh", "osasco", "curitiba", "brasilia", "br"}
+    
+    for w in words:
+        clean_w = re.sub(r"[^a-z0-9]", "", w)
+        if len(clean_w) >= 3 and not clean_w.isdigit() and clean_w not in noise:
+            meaningful.append(clean_w)
+            if len(meaningful) >= 2:
+                break
+                
+    if not meaningful:
+        return re.sub(r"[^a-z0-9\s]", "", d).strip()[:25].strip()
+        
+    return " ".join(meaningful)
+
+
+def _to_utc_iso(dt_str: str | None) -> str:
+    """Garante que a data esteja no formato ISO UTC completo."""
+    if not dt_str:
+        return ""
+    try:
+        # Tenta parsear e forçar UTC
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat().replace("+00:00", "Z")
+    except Exception:
+        return dt_str
+
+
+def _to_iso_date(dt_str: str | None) -> str:
+    """Dia-calendário (YYYY-MM-DD), canônico para o campo `date`.
+
+    O cliente faz range queries lexicográficas em `date` (ex.: where date <=
+    '2026-06-05'); guardar o timestamp ISO completo quebra esse limite porque
+    '2026-06-05T...' ordena DEPOIS de '2026-06-05'. A precisão fica em `datetime`.
+    """
+    iso = _to_utc_iso(dt_str)
+    return iso[:10] if iso else ""
 
 
 class MCPClient:
@@ -221,11 +287,14 @@ def normalize_account(acc: dict, bank_name: str) -> dict:
 
 
 def normalize_transaction(tx: dict, bank_name: str, account_id: str, account_type: str = "BANK") -> dict:
-    amount = float(tx.get("amount", 0) or 0)
-    tx_type = tx.get("type", "")
-    if tx_type == "DEBIT":
+    amount = _f(tx.get("amount"))
+    tx_type = str(tx.get("type", "")).upper()
+    desc = tx.get("description", "")
+    
+    # Força sinal correto independente do que vem do banco (defesa contra inconsistências)
+    if tx_type in ("DEBIT", "OUTFLOW"):
         amount = -abs(amount)
-    elif tx_type == "CREDIT":
+    elif tx_type in ("CREDIT", "INFLOW"):
         amount = abs(amount)
 
     # Pluggy retorna metadados de parcelamento em creditCardMetadata
@@ -234,13 +303,21 @@ def normalize_transaction(tx: dict, bank_name: str, account_id: str, account_typ
     installment_total  = cc_meta.get("totalInstallments") or cc_meta.get("total")
     bill_id            = cc_meta.get("billId") or cc_meta.get("creditCardBillId")
 
+    # Fallback: Extrai do description se estiver faltando nos metadados estruturados
+    if not installment_number or not installment_total:
+        match = re.search(r"(\d+)\s*/\s*(\d+)", desc)
+        if match:
+            installment_number = int(match.group(1))
+            installment_total  = int(match.group(2))
+
     return {
         "transaction_id":      tx.get("id"),
         "bank":                bank_name,
         "account_id":          account_id,
         "account_type":        account_type,
-        "date":                (tx.get("date") or "")[:10],
-        "description":         tx.get("description", ""),
+        "date":                _to_iso_date(tx.get("date")),
+        "datetime":            _to_utc_iso(tx.get("date")),
+        "description":         desc,
         "amount":              amount,
         "category":            tx.get("category", "Outros"),
         "balance":             tx.get("balance"),
@@ -250,6 +327,7 @@ def normalize_transaction(tx: dict, bank_name: str, account_id: str, account_typ
         "installment_number":  installment_number,
         "installment_total":   installment_total,
         "bill_id":             bill_id,
+        "merchant_key":        merchant_key(desc),
     }
 
 
@@ -279,8 +357,8 @@ def normalize_bill(bill: dict, bank_name: str, account_id: str) -> dict:
         "bill_id":    bill.get("id"),
         "bank":       bank_name,
         "account_id": account_id,
-        "due_date":   (bill.get("dueDate") or "")[:10],
-        "close_date": (bill.get("closeDate") or "")[:10] or None,
+        "due_date":   _to_utc_iso(bill.get("dueDate")),
+        "close_date": _to_utc_iso(bill.get("closeDate")) or None,
         "total":      _f(bill.get("totalAmount")),
         "minimum":    _f(bill.get("minimumPaymentAmount") or bill.get("minimumPayment")) or None,
         "status":     bill.get("payment_status") or bill.get("paymentStatus", "OPEN"),
@@ -289,7 +367,7 @@ def normalize_bill(bill: dict, bank_name: str, account_id: str) -> dict:
                 "description":    _item_description(i),
                 "amount":         _f(i.get("amount")),
                 "type":           i.get("type", ""),
-                "date":           (i.get("date") or "")[:10] or None,
+                "date":           _to_utc_iso(i.get("date")) or None,
                 "is_installment": _item_is_installment(i),
             }
             for i in raw_items
@@ -366,14 +444,30 @@ def post_to_firebase(
         log.warning("FIREBASE_WEBHOOK_URL não configurado — pulando sync Firebase.")
         return
 
+    # Deduplicação interna por ID para evitar duplicidade em casos de sobreposição de páginas
+    def _uniq(items: list[dict], id_key: str) -> list[dict]:
+        seen = {}
+        unique = []
+        for it in items:
+            idx = it.get(id_key)
+            if idx and idx not in seen:
+                seen[idx] = True
+                unique.append(it)
+        return unique
+
+    clean_accs = _uniq(accounts, "account_id")
+    clean_txs  = _uniq(transactions, "transaction_id")
+    clean_bills = _uniq(bills, "bill_id")
+    clean_invs  = _uniq(investments, "investment_id")
+
     payload = {
         "uid":          FIREBASE_USER_UID,
         "run_id":       run_id,
         "bank":         bank,
-        "accounts":     accounts,
-        "transactions": transactions[-MAX_TX:],
-        "bills":        bills,
-        "investments":  investments,
+        "accounts":     clean_accs,
+        "transactions": clean_txs[-MAX_TX:],
+        "bills":        clean_bills,
+        "investments":  clean_invs,
     }
     try:
         resp = requests.post(
@@ -449,6 +543,17 @@ def run_etl() -> None:
                 f"  Total — contas={len(accounts)} tx={len(all_transactions)} "
                 f"faturas={len(all_bills)} inv={len(investments)}"
             )
+
+            # Reconciliação Bancária básica: verifica se a soma das transações bate com o saldo
+            # Apenas um aviso no log por enquanto, mas ajuda a detectar 'buracos' na API.
+            for acc in accounts:
+                acc_id = acc["account_id"]
+                acc_txs = [t for t in all_transactions if t["account_id"] == acc_id]
+                if acc_txs and acc["account_type"] != "CREDIT":
+                    tx_sum = sum(t["amount"] for t in acc_txs)
+                    # Nota: Isso é simplista pois não temos o saldo inicial exato da janela,
+                    # mas serve para logar a consistência do lote atual.
+                    log.info(f"  Reconciliação {acc['name']}: Movimentação de R$ {tx_sum:.2f} detectada no lote.")
 
             post_to_firebase(
                 bank=bank_name,
