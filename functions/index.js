@@ -199,6 +199,25 @@ async function validateSecret(req, claimedUid) {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: per-user cooldown for expensive/maintenance endpoints
+// ---------------------------------------------------------------------------
+// Returns { ok: true } if the action may run (and stamps the cooldown), or
+// { ok: false, retryAfter } if the user invoked it within the window. Prevents
+// a single authenticated user from hammering full-collection sweeps / dispatches.
+async function checkCooldown(key, uid, windowMs) {
+  const ref = db.doc(`_security/cooldowns/${key}/${uid}`)
+  const snap = await ref.get()
+  if (snap.exists) {
+    const last = snap.data()?.lastRun?.toDate?.()
+    if (last instanceof Date && last.getTime() > Date.now() - windowMs) {
+      return { ok: false, retryAfter: Math.ceil((windowMs - (Date.now() - last.getTime())) / 1000) }
+    }
+  }
+  await ref.set({ lastRun: FieldValue.serverTimestamp() }, { merge: true })
+  return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
 // onEtlWebhook — receives data from the Python ETL and writes to Firestore
 // ---------------------------------------------------------------------------
 exports.etlWebhook = onRequest(
@@ -292,7 +311,7 @@ exports.etlWebhook = onRequest(
     } catch (err) {
       console.error('etlWebhook error:', err)
       await runRef.set({ status: 'error', error: err.message, completedAt: FieldValue.serverTimestamp() }, { merge: true })
-      res.status(500).json({ error: 'Internal error', message: err.message })
+      res.status(500).json({ error: 'Internal error' })
     }
   }
 )
@@ -315,11 +334,20 @@ exports.forceEtl = onRequest(
       return
     }
 
+    let callerUid
     try {
       const { getAuth } = require('firebase-admin/auth')
-      await getAuth().verifyIdToken(idToken)
+      const decoded = await getAuth().verifyIdToken(idToken)
+      callerUid = decoded.uid
     } catch {
       res.status(401).json({ error: 'Invalid auth token' })
+      return
+    }
+
+    // Throttle: a user-triggered ETL run takes ~2 min; don't let it be spammed.
+    const cd = await checkCooldown('forceEtl', callerUid, 2 * 60 * 1000)
+    if (!cd.ok) {
+      res.status(429).json({ error: 'ETL já acionado recentemente. Aguarde um pouco.', retryAfter: cd.retryAfter })
       return
     }
 
@@ -349,7 +377,7 @@ exports.forceEtl = onRequest(
       res.status(202).json({ message: 'ETL iniciado! Os dados serão atualizados em ~2 minutos.' })
     } catch (err) {
       console.error('forceEtl GitHub dispatch error:', err.message)
-      res.status(500).json({ error: 'Falha ao acionar ETL', message: err.message })
+      res.status(500).json({ error: 'Falha ao acionar ETL' })
     }
   }
 )
@@ -376,8 +404,16 @@ exports.normalizeDatabase = onRequest(
       return
     }
 
+    // Throttle: this sweeps the user's entire transactions/accounts/bills
+    // collections on a 540s/1GiB function — cap how often it can be invoked.
+    const cd = await checkCooldown('normalizeDatabase', uid, 10 * 60 * 1000)
+    if (!cd.ok) {
+      res.status(429).json({ error: 'Normalização já executada recentemente.', retryAfter: cd.retryAfter })
+      return
+    }
+
     console.info(`[Maintenance] Starting normalization for user ${uid}`)
-    
+
     let txCount = 0
     let accCount = 0
     let billCount = 0
@@ -432,7 +468,7 @@ exports.normalizeDatabase = onRequest(
       })
     } catch (err) {
       console.error('[Maintenance] Normalization failed:', err)
-      res.status(500).json({ error: err.message })
+      res.status(500).json({ error: 'Normalization failed' })
     }
   }
 )
