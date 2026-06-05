@@ -9,9 +9,8 @@ import { useClassificationRules } from '@/hooks/useClassificationRules'
 import { useCustomCategories } from '@/hooks/useCustomCategories'
 import { formatCurrency, formatDate, translateCategory } from '@/lib/formatters'
 import useFinanceStore from '@/store/useFinanceStore'
+import { useTransactionMutations } from '@/hooks/useTransactionMutations'
 import { CATEGORIES, compareCategories, merchantKey } from '@/lib/categories'
-import { doc, writeBatch } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
 import { Select } from '@/components/ui/select'
 
 const NAV_SYSTEM = [
@@ -132,27 +131,136 @@ function AvatarMenu() {
   )
 }
 
-function NotificationsMenu({ uid }) {
-  const { pathname } = useLocation()
-  const { items, count } = useNewTransactions(uid)
+// Popover body. Mounted ONLY while the notifications popover is open, so its
+// heavy 5000-doc transactions listener (needed only for quick-classify matching)
+// doesn't run permanently behind a closed dropdown.
+function NotificationsPanel({ uid, items, count, pos, popRef }) {
   const { transactions } = useTransactions(uid, { maxDocs: 5000 })
   const { saveRule } = useClassificationRules(uid)
   const { customCategories } = useCustomCategories(uid)
-  
-  const [open, setOpen] = useState(false)
-  const [pos, setPos] = useState({ top: 0, right: 0 })
+  const { setCategoryBulk } = useTransactionMutations(uid)
+
   const [isClassifying, setIsClassifying] = useState(null) // key
   const [saving, setSaving] = useState(null) // key
-  
-  const triggerRef = useRef(null)
-  const popRef = useRef(null)
 
-  const allCategories = useMemo(() => [
+  const options = useMemo(() => [
     ...CATEGORIES,
     ...customCategories.map(c => ({ key: c.key, pt: c.label, custom: true })),
-  ].sort(compareCategories), [customCategories])
+  ].sort(compareCategories).map(c => ({ value: c.key, label: c.pt })), [customCategories])
 
-  const options = useMemo(() => allCategories.map(c => ({ value: c.key, label: c.pt })), [allCategories])
+  async function handleQuickClassify(it, category) {
+    if (!uid || saving || !category) return
+    setSaving(it.key)
+    try {
+      const pattern = it.key // it.key is already the merchantKey
+      // Find all transactions matching this merchant fingerprint
+      const toUpdate = transactions.filter(t => merchantKey(t.description) === pattern)
+      await setCategoryBulk(toUpdate.map(t => t.id), category)
+      await saveRule({ pattern, category })
+      setIsClassifying(null)
+    } catch (err) {
+      console.error('Quick classify error:', err)
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  return createPortal(
+    <div
+      ref={popRef}
+      className="avatar-pop"
+      role="menu"
+      style={{ position: 'fixed', top: pos.top, right: pos.right, width: 420, maxWidth: 'calc(100vw - 16px)' }}
+    >
+      <div className="avatar-pop-head" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+        <div className="apop-name">Novas transações</div>
+        <div className="apop-mail" style={{ margin: 0 }}>{count} para classificar</div>
+      </div>
+      <div className="apop-sep" />
+
+      {count === 0 ? (
+        <div style={{ padding: '20px 12px', textAlign: 'center', color: 'var(--text-faint)', fontSize: 12.5 }}>
+          Nenhum recebedor novo aguardando classificação este mês. 🎉
+        </div>
+      ) : (
+        <div style={{ maxHeight: 380, overflowY: 'auto', display: 'grid', gap: 2 }}>
+          {items.map((it) => (
+            <div key={it.key} className="apop-item" style={{ alignItems: 'center', gap: 12, cursor: 'default' }}>
+              <NavLink
+                to="/classificacao"
+                role="menuitem"
+                style={{ minWidth: 0, flex: 1, textDecoration: 'none', color: 'inherit' }}
+              >
+                <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)', lineHeight: 1.4 }}>
+                  {it.description || '—'}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <span>{it.bank ?? '—'}</span>
+                  <span>·</span>
+                  <span>{it.date ? formatDate(it.date, 'dd/MM') : '—'}</span>
+                  {it.count > 1 && (<><span>·</span><span>{it.count}×</span></>)}
+                </div>
+              </NavLink>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600, fontFamily: 'var(--font-mono)', color: it.total < 0 ? 'var(--neg)' : 'var(--pos)' }}>
+                  {formatCurrency(it.total)}
+                </span>
+
+                {isClassifying === it.key ? (
+                  <Select
+                    className="h-8 py-0 px-2 text-xs w-32"
+                    placeholder="Cat..."
+                    options={options}
+                    onChange={(val) => handleQuickClassify(it, val)}
+                    disabled={saving === it.key}
+                  />
+                ) : (
+                  <button
+                    className="btn icon-btn"
+                    style={{ width: 28, height: 28, padding: 0, borderRadius: 6, background: 'var(--surface-3)' }}
+                    onClick={(e) => { e.preventDefault(); setIsClassifying(it.key) }}
+                    title="Classificar rapidamente"
+                  >
+                    {saving === it.key ? (
+                      <svg className="animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, opacity: 0.7 }}>
+                        <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}>
+                        <path d="M12 5v14M5 12h14" />
+                      </svg>
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {count > 0 && (
+        <>
+          <div className="apop-sep" />
+          <NavLink to="/classificacao" role="menuitem" className="apop-item" style={{ justifyContent: 'center', color: 'var(--accent)', fontWeight: 600 }}>
+            Ver todas na central de classificação
+          </NavLink>
+        </>
+      )}
+    </div>,
+    document.body
+  )
+}
+
+function NotificationsMenu({ uid }) {
+  const { pathname } = useLocation()
+  const { items, count } = useNewTransactions(uid)
+
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ top: 0, right: 0 })
+
+  const triggerRef = useRef(null)
+  const popRef = useRef(null)
 
   const place = () => {
     const r = triggerRef.current?.getBoundingClientRect()
@@ -181,40 +289,7 @@ function NotificationsMenu({ uid }) {
   }, [open])
 
   // Close on navigation.
-  useEffect(() => { 
-    setOpen(false)
-    setIsClassifying(null)
-  }, [pathname])
-
-  async function handleQuickClassify(it, category) {
-    if (!uid || saving || !category) return
-    setSaving(it.key)
-    try {
-      const pattern = it.key // it.key is already the merchantKey
-      // Find all transactions matching this merchant fingerprint
-      const toUpdate = transactions.filter(t =>
-        merchantKey(t.description) === pattern
-      )
-
-      if (toUpdate.length > 0) {
-        // Process in batches of 500
-        for (let i = 0; i < toUpdate.length; i += 500) {
-          const batch = writeBatch(db)
-          toUpdate.slice(i, i + 500).forEach(t => {
-            batch.update(doc(db, `users/${uid}/transactions`, t.id), { category })
-          })
-          await batch.commit()
-        }
-      }
-      
-      await saveRule({ pattern, category })
-      setIsClassifying(null)
-    } catch (err) {
-      console.error('Quick classify error:', err)
-    } finally {
-      setSaving(null)
-    }
-  }
+  useEffect(() => { setOpen(false) }, [pathname])
 
   return (
     <div className="avatar-menu">
@@ -245,91 +320,7 @@ function NotificationsMenu({ uid }) {
         )}
       </button>
 
-      {open && createPortal(
-        <div
-          ref={popRef}
-          className="avatar-pop"
-          role="menu"
-          style={{ position: 'fixed', top: pos.top, right: pos.right, width: 420, maxWidth: 'calc(100vw - 16px)' }}
-        >
-          <div className="avatar-pop-head" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-            <div className="apop-name">Novas transações</div>
-            <div className="apop-mail" style={{ margin: 0 }}>{count} para classificar</div>
-          </div>
-          <div className="apop-sep" />
-
-          {count === 0 ? (
-            <div style={{ padding: '20px 12px', textAlign: 'center', color: 'var(--text-faint)', fontSize: 12.5 }}>
-              Nenhum recebedor novo aguardando classificação este mês. 🎉
-            </div>
-          ) : (
-            <div style={{ maxHeight: 380, overflowY: 'auto', display: 'grid', gap: 2 }}>
-              {items.map((it) => (
-                <div key={it.key} className="apop-item" style={{ alignItems: 'center', gap: 12, cursor: 'default' }}>
-                  <NavLink
-                    to="/classificacao"
-                    role="menuitem"
-                    style={{ minWidth: 0, flex: 1, textDecoration: 'none', color: 'inherit' }}
-                  >
-                    <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)', lineHeight: 1.4 }}>
-                      {it.description || '—'}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <span>{it.bank ?? '—'}</span>
-                      <span>·</span>
-                      <span>{it.date ? formatDate(it.date, 'dd/MM') : '—'}</span>
-                      {it.count > 1 && (<><span>·</span><span>{it.count}×</span></>)}
-                    </div>
-                  </NavLink>
-                  
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                    <span style={{ fontSize: 12.5, fontWeight: 600, fontFamily: 'var(--font-mono)', color: it.total < 0 ? 'var(--neg)' : 'var(--pos)' }}>
-                      {formatCurrency(it.total)}
-                    </span>
-                    
-                    {isClassifying === it.key ? (
-                      <Select
-                        className="h-8 py-0 px-2 text-xs w-32"
-                        placeholder="Cat..."
-                        options={options}
-                        onChange={(val) => handleQuickClassify(it, val)}
-                        disabled={saving === it.key}
-                      />
-                    ) : (
-                      <button
-                        className="btn icon-btn"
-                        style={{ width: 28, height: 28, padding: 0, borderRadius: 6, background: 'var(--surface-3)' }}
-                        onClick={(e) => { e.preventDefault(); setIsClassifying(it.key) }}
-                        title="Classificar rapidamente"
-                      >
-                        {saving === it.key ? (
-                          <svg className="animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, opacity: 0.7 }}>
-                            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                          </svg>
-                        ) : (
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}>
-                            <path d="M12 5v14M5 12h14" />
-                          </svg>
-                        )}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {count > 0 && (
-            <>
-              <div className="apop-sep" />
-              <NavLink to="/classificacao" role="menuitem" className="apop-item" style={{ justifyContent: 'center', color: 'var(--accent)', fontWeight: 600 }}>
-                Ver todas na central de classificação
-              </NavLink>
-            </>
-          )}
-        </div>,
-        document.body
-      )}
+      {open && <NotificationsPanel uid={uid} items={items} count={count} pos={pos} popRef={popRef} />}
     </div>
   )
 }
