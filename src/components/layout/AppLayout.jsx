@@ -1,13 +1,15 @@
-import { Outlet } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Header'
 import { MobileNav } from './MobileNav'
+import { ErrorBoundary } from './ErrorBoundary'
 import { useAuth } from '@/hooks/useAuth'
 import { useExcludedCategories } from '@/hooks/useExcludedCategories'
 import { useAutoClassify } from '@/hooks/useAutoClassify'
 
 export function AppLayout() {
   const { user } = useAuth()
+  const { pathname } = useLocation()
   // Keep the excluded-categories store synced app-wide so every page's
   // useTransactions filters consistently.
   useExcludedCategories(user?.uid)
@@ -22,7 +24,9 @@ export function AppLayout() {
         <Topbar />
         <div className="scroll">
           <div className="page">
-            <Outlet />
+            <ErrorBoundary key={pathname}>
+              <Outlet />
+            </ErrorBoundary>
           </div>
         </div>
       </div>
