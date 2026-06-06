@@ -169,10 +169,17 @@ export default function Faturas() {
   [])
 
   if (loading) return (
-    <div style={{ display: 'grid', gap: 20 }}>
+    <div className="fade-in grid gap-[22px]">
       <Skeleton className="h-16 w-full" />
-      <Skeleton className="h-48 w-full" />
-      <div className="grid grid-cols-2 gap-6"><Skeleton className="h-96" /><Skeleton className="h-96" /></div>
+      <Skeleton className="h-[260px] w-full rounded-[14px]" />
+      <div className="g-2">
+        <Skeleton className="h-[88px] w-full rounded-[14px]" />
+        <Skeleton className="h-[88px] w-full rounded-[14px]" />
+      </div>
+      <div className="g-2">
+        <Skeleton className="h-[88px] w-full rounded-[14px]" />
+        <Skeleton className="h-[88px] w-full rounded-[14px]" />
+      </div>
     </div>
   )
 
@@ -196,7 +203,7 @@ export default function Faturas() {
         </div>
       </div>
 
-      <div className="grid gap-4">
+      <div className="grid gap-[18px]">
         {(tab === 'upcoming' ? upcoming : history).map(b => {
           const meta = getBankMeta(b.bank ?? '')
           const [stCls, stLbl] = statusInfo(b.status)
@@ -232,7 +239,7 @@ export default function Faturas() {
           )
         })}
         {(tab === 'upcoming' ? upcoming : history).length === 0 && (
-          <div className="py-20 text-center text-muted-foreground opacity-50">Nenhuma fatura encontrada nesta seção.</div>
+          <div className="py-10 text-center text-muted-foreground opacity-50">Nenhuma fatura encontrada nesta seção.</div>
         )}
       </div>
 

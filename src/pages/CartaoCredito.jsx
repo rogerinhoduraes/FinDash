@@ -190,10 +190,22 @@ export default function CartaoCredito() {
   }, [cardTxs])
 
   if (loading) return (
-    <div style={{ display: 'grid', gap: 20 }}>
-      <Skeleton className="h-16 w-full" />
-      <div className="grid grid-cols-2 gap-6"><Skeleton className="h-44" /><Skeleton className="h-44" /></div>
-      <Skeleton className="h-64 w-full" />
+    <div className="grid gap-[22px]">
+      <Skeleton className="h-[52px] w-[55%] rounded-[10px]" />
+      <div className="g-3">
+        <Skeleton className="h-[110px] w-full rounded-[14px]" />
+        <Skeleton className="h-[110px] w-full rounded-[14px]" />
+        <Skeleton className="h-[110px] w-full rounded-[14px]" />
+      </div>
+      <div className="g-2">
+        <Skeleton className="h-[180px] w-full rounded-[14px]" />
+        <Skeleton className="h-[180px] w-full rounded-[14px]" />
+      </div>
+      <div className="g-wide-l">
+        <Skeleton className="h-[280px] w-full rounded-[14px]" />
+        <Skeleton className="h-[280px] w-full rounded-[14px]" />
+      </div>
+      <Skeleton className="h-[260px] w-full rounded-[14px]" />
     </div>
   )
 

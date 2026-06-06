@@ -1,12 +1,12 @@
-import { useMemo, useEffect, useRef } from 'react'
+import { useMemo, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useAccounts } from '@/hooks/useAccounts'
 import { useTransactions } from '@/hooks/useTransactions'
 import { useBills } from '@/hooks/useBills'
 import { useInvestments } from '@/hooks/useInvestments'
-import { formatCurrency, formatDate, getBankMeta } from '@/lib/formatters'
-import { differenceInDays, parseISO, format, subMonths, startOfMonth, endOfMonth, isWithinInterval } from 'date-fns'
+import { formatDate, getBankMeta } from '@/lib/formatters'
+import { differenceInDays, parseISO, format, subMonths, addMonths, startOfMonth, endOfMonth, isWithinInterval, isSameMonth } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import useFinanceStore from '@/store/useFinanceStore'
 import { RadialScore } from '@/components/charts/RadialScoreChart'
@@ -14,36 +14,11 @@ import { CompositionBar } from '@/components/charts/CompositionBar'
 import { CashflowTideChart } from '@/components/charts/CashflowTideChart'
 import { LineMultiChart } from '@/components/charts/LineMultiChart'
 import { Sparkline } from '@/components/charts/SparklineChart'
-
-function Sk({ w = '100%', h = 16, r = 8, style }) {
-  return <div className="sk" style={{ width: w, height: h, borderRadius: r, ...style }} />
-}
-
-function Money({ value, style, className = '' }) {
-  const { privacyMode } = useFinanceStore()
-  return (
-    <span className={'money ' + (privacyMode ? 'blurred ' : '') + className} style={style}>
-      {formatCurrency(value)}
-    </span>
-  )
-}
-
-function BankDot({ bank, size = 9 }) {
-  const meta = getBankMeta(bank)
-  return <span className="bank-dot" style={{ background: meta.color, width: size, height: size }} />
-}
-
-function SectionHead({ title, sub, right }) {
-  return (
-    <div className="section-head">
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <span className="section-title">{title}</span>
-        {sub && <span className="section-sub">{sub}</span>}
-      </div>
-      {right}
-    </div>
-  )
-}
+import { Money } from '@/components/ui/Money'
+import { BankDot } from '@/components/ui/BankDot'
+import { SectionHead } from '@/components/ui/SectionHead'
+import { Skeleton } from '@/components/ui/skeleton'
+import { calculateKpis, calculateHealthScore } from '@/lib/finance'
 
 function Factor({ label, pct, val, invert }) {
   const color = invert
@@ -81,36 +56,52 @@ export default function Dashboard() {
 
   const loading = aLoading || iLoading
 
-  const kpis = useMemo(() => {
-    const checking = accounts.filter((a) => a.account_type !== 'CREDIT').reduce((s, a) => s + (a.balance ?? 0), 0)
-    const cardDebt = accounts.filter((a) => a.account_type === 'CREDIT').reduce((s, a) => s + Math.abs(a.balance ?? 0), 0)
-    const totalLimit = accounts.filter((a) => a.account_type === 'CREDIT').reduce((s, a) => s + (a.limit ?? 0), 0)
-    const invested = investments.filter((i) => !['REDEEMED','RESGATADO','TOTAL_WITHDRAWAL','PARTIAL_WITHDRAWAL'].includes(i.status)).reduce((s, i) => s + (i.balance ?? i.value ?? 0), 0)
-    const net = checking + invested - cardDebt
-    const util = totalLimit > 0 ? (cardDebt / totalLimit) * 100 : 0
+  // Dashboard is scoped to a selected month, defaulting to the current month.
+  const [selectedMonth, setSelectedMonth] = useState(() => startOfMonth(new Date()))
+  const isCurrentMonth = isSameMonth(selectedMonth, new Date())
+  const monthLabel = (() => {
+    const l = format(selectedMonth, "MMMM 'de' yyyy", { locale: ptBR })
+    return l.charAt(0).toUpperCase() + l.slice(1)
+  })()
+  const goPrevMonth = () => setSelectedMonth((m) => startOfMonth(subMonths(m, 1)))
+  const goNextMonth = () => setSelectedMonth((m) => (isSameMonth(m, new Date()) ? m : startOfMonth(addMonths(m, 1))))
 
-    const now = new Date()
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10)
-    const monthTx = transactions.filter((t) => (t.date ?? '') >= monthStart)
-    const income  = monthTx.filter((t) => (t.amount ?? 0) > 0).reduce((s, t) => s + Math.abs(t.amount), 0)
-    const expense = monthTx.filter((t) => (t.amount ?? 0) < 0).reduce((s, t) => s + Math.abs(t.amount), 0)
+  const monthTxAll = useMemo(() => {
+    const s = startOfMonth(selectedMonth), e = endOfMonth(selectedMonth)
+    return transactions.filter((t) => {
+      const d = t.date ? parseISO(t.date) : null
+      return d && isWithinInterval(d, { start: s, end: e })
+    })
+  }, [transactions, selectedMonth])
 
-    return { checking, cardDebt, totalLimit, invested, net, util, income, expense }
-  }, [accounts, investments, transactions])
+  const monthIncome  = useMemo(() => monthTxAll.filter((t) => (t.amount ?? 0) > 0).reduce((s, t) => s + Math.abs(t.amount), 0), [monthTxAll])
+  const monthExpense = useMemo(() => monthTxAll.filter((t) => (t.amount ?? 0) < 0).reduce((s, t) => s + Math.abs(t.amount), 0), [monthTxAll])
 
-  const savingsRate = kpis.income > 0 ? (kpis.income - kpis.expense) / kpis.income : 0
-  const fundMonths = kpis.expense > 0 ? kpis.checking / kpis.expense : 0
-  const sSavings = Math.min(100, savingsRate * 300)
-  const sUtil = 100 - kpis.util
-  const sFund = Math.min(100, (fundMonths / 3) * 100)
-  const score = Math.round(0.5 * sSavings + 0.3 * sUtil + 0.2 * sFund)
+  const kpis = useMemo(() => calculateKpis(accounts, investments), [accounts, investments])
+  const health = useMemo(() => calculateHealthScore(kpis, monthIncome, monthExpense), [kpis, monthIncome, monthExpense])
 
-  const recentTx = useMemo(() => transactions.slice(0, 5), [transactions])
+  const monthNet = monthIncome - monthExpense
+
+  // Split accounts into checking vs credit cards, hiding zero-value entries.
+  const checkingAccounts = useMemo(
+    () => accounts.filter((a) => a.account_type !== 'CREDIT' && Math.abs(a.balance ?? 0) >= 0.005),
+    [accounts]
+  )
+  const creditCards = useMemo(
+    () => accounts.filter((a) => a.account_type === 'CREDIT' && Math.abs(a.balance ?? 0) >= 0.005),
+    [accounts]
+  )
+
+  const recentTx = useMemo(() =>
+    monthTxAll.filter((t) => Math.abs(Number(t.amount ?? 0)) >= 0.005).slice(0, 5),
+    [monthTxAll]
+  )
   const upcomingBills = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10)
     const byBank = {}
     for (const b of bills) {
       if ((b.due_date ?? '') < today) continue
+      if (Math.abs(b.total ?? 0) < 0.005) continue
       const key = (b.bank ?? 'unknown').toLowerCase()
       if (!byBank[key] || (b.due_date ?? '') < (byBank[key].due_date ?? '')) {
         byBank[key] = b
@@ -139,28 +130,26 @@ export default function Dashboard() {
     [])
 
   const incomeSparkData = useMemo(() => {
-    const now = new Date()
     return Array.from({ length: 6 }, (_, i) => {
-      const d = subMonths(now, 5 - i)
+      const d = subMonths(selectedMonth, 5 - i)
       const s = startOfMonth(d), e = endOfMonth(d)
       return transactions.filter((t) => {
         const dt = t.date ? parseISO(t.date) : null
         return dt && isWithinInterval(dt, { start: s, end: e }) && (t.amount ?? 0) > 0
       }).reduce((sum, t) => sum + Math.abs(t.amount), 0)
     })
-  }, [transactions])
+  }, [transactions, selectedMonth])
 
   const expenseSparkData = useMemo(() => {
-    const now = new Date()
     return Array.from({ length: 6 }, (_, i) => {
-      const d = subMonths(now, 5 - i)
+      const d = subMonths(selectedMonth, 5 - i)
       const s = startOfMonth(d), e = endOfMonth(d)
       return transactions.filter((t) => {
         const dt = t.date ? parseISO(t.date) : null
         return dt && isWithinInterval(dt, { start: s, end: e }) && (t.amount ?? 0) < 0
       }).reduce((sum, t) => sum + Math.abs(t.amount), 0)
     })
-  }, [transactions])
+  }, [transactions, selectedMonth])
 
   useEffect(() => {
     if (loading) return
@@ -177,6 +166,25 @@ export default function Dashboard() {
   return (
     <div className="stagger" ref={scrollRef} style={{ display: 'grid', gap: 18, minWidth: 0 }}>
 
+      {/* MONTH SELECTOR */}
+      <SectionHead
+        title="Resumo do mês"
+        right={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {!isCurrentMonth && (
+              <button className="btn" style={{ fontSize: 12, padding: '3px 10px' }} onClick={() => setSelectedMonth(startOfMonth(new Date()))}>Voltar ao mês atual</button>
+            )}
+            <button className="btn" aria-label="Mês anterior" onClick={goPrevMonth} style={{ padding: '6px 10px' }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ width: 16, height: 16 }}><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <span style={{ minWidth: 150, textAlign: 'center', fontWeight: 600, fontSize: 14, textTransform: 'capitalize' }}>{monthLabel}</span>
+            <button className="btn" aria-label="Próximo mês" onClick={goNextMonth} disabled={isCurrentMonth} style={{ padding: '6px 10px', opacity: isCurrentMonth ? 0.4 : 1, cursor: isCurrentMonth ? 'not-allowed' : 'pointer' }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ width: 16, height: 16 }}><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+          </div>
+        }
+      />
+
       {/* HERO ROW */}
       <div className="g-hero">
         {/* Net worth */}
@@ -184,18 +192,24 @@ export default function Dashboard() {
           <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 100% at 100% 0%, var(--accent-dim), transparent 55%)', pointerEvents: 'none' }} />
           {loading ? (
             <div style={{ position: 'relative' }}>
-              <Sk w="30%" h={13} /><Sk w="55%" h={52} style={{ marginTop: 16 }} /><Sk w="100%" h={14} r={99} style={{ marginTop: 28 }} /><Sk w="80%" h={40} style={{ marginTop: 16 }} />
+              <Skeleton className="h-[13px] w-[30%]" /><Skeleton className="mt-4 h-[52px] w-[55%]" /><Skeleton className="mt-7 h-[14px] w-full rounded-full" /><Skeleton className="mt-4 h-[40px] w-[80%]" />
             </div>
           ) : (
             <div style={{ position: 'relative' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
                 <span className="eyebrow">Patrimônio líquido</span>
-                <span className="chip"><span style={{ width: 8, height: 8, borderRadius: 99, background: 'var(--pos)', marginRight: 2 }} />conta + invest. − dívida</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, flexShrink: 0 }}>
+                  <span className={'delta ' + (monthNet >= 0 ? 'up' : 'down')} style={{ fontSize: 12.5 }}>
+                    {monthNet >= 0 ? '▲' : '▼'} {monthNet >= 0 ? '+' : '−'}<Money value={Math.abs(monthNet)} />
+                  </span>
+                  <span className="faint">no mês</span>
+                </span>
               </div>
               <div style={{ marginTop: 10 }}>
-                <Money value={kpis.net} style={{ fontSize: 'clamp(26px, 3.5vw, 46px)', fontWeight: 800, letterSpacing: '-.03em', fontFamily: 'var(--font-display)', display: 'block', lineHeight: 1.05 }} />
+                <Money value={kpis.net} style={{ fontSize: 'clamp(28px, 3.7vw, 48px)', fontWeight: 800, letterSpacing: '-.03em', fontFamily: 'var(--font-display)', display: 'block', lineHeight: 1.04 }} />
+                <div className="faint" style={{ fontSize: 12, marginTop: 7 }}>conta corrente + investimentos − dívida de cartão</div>
               </div>
-              <div style={{ marginTop: 26 }}>
+              <div style={{ marginTop: 22 }}>
                 <CompositionBar segments={[
                   { label: 'Conta corrente', value: kpis.checking, color: 'var(--accent)' },
                   { label: 'Investimentos', value: kpis.invested, color: 'var(--nubank)' },
@@ -208,16 +222,16 @@ export default function Dashboard() {
 
         {/* Health score */}
         <div className="card" style={{ display: 'grid', placeItems: 'center', alignContent: 'center' }}>
-          {loading ? <Sk w={150} h={150} r={99} /> : (
+          {loading ? <Skeleton className="h-[150px] w-[150px] rounded-full" /> : (
             <div style={{ textAlign: 'center', width: '100%' }}>
               <div className="eyebrow" style={{ marginBottom: 6 }}>Saúde financeira</div>
               <div style={{ display: 'grid', placeItems: 'center' }}>
-                <RadialScore score={score} />
+                <RadialScore score={health.score} />
               </div>
               <div style={{ display: 'grid', gap: 9, marginTop: 14, textAlign: 'left' }}>
-                <Factor label="Poupança" pct={Math.round(savingsRate * 100) + '%'} val={Math.round(sSavings)} />
-                <Factor label="Crédito usado" pct={Math.round(kpis.util) + '%'} val={Math.round(sUtil)} invert />
-                <Factor label="Reserva" pct={fundMonths.toFixed(1) + ' meses'} val={Math.round(sFund)} />
+                <Factor {...health.factors.savings} />
+                <Factor {...health.factors.util} />
+                <Factor {...health.factors.fund} />
               </div>
             </div>
           )}
@@ -228,13 +242,13 @@ export default function Dashboard() {
       <div className="g-3">
         {/* Income */}
         <div className="card">
-          {tLoading ? (<><Sk w="40%" h={12} /><Sk w="70%" h={30} style={{ marginTop: 14 }} /><Sk w="100%" h={30} style={{ marginTop: 18 }} /></>) : (
+          {tLoading ? (<><Skeleton className="h-[12px] w-[40%]" /><Skeleton className="mt-3.5 h-[30px] w-[70%]" /><Skeleton className="mt-[18px] h-[30px] w-full" /></>) : (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span className="eyebrow">Receitas do mês</span>
               </div>
               <div style={{ marginTop: 12 }}>
-                <Money value={kpis.income} style={{ fontSize: 'clamp(18px, 2vw, 27px)', fontWeight: 700, letterSpacing: '-.02em' }} />
+                <Money value={monthIncome} style={{ fontSize: 'clamp(18px, 2vw, 27px)', fontWeight: 700, letterSpacing: '-.02em' }} />
               </div>
               <div style={{ marginTop: 16 }}><Sparkline data={incomeSparkData} color="var(--pos)" /></div>
             </>
@@ -243,11 +257,11 @@ export default function Dashboard() {
 
         {/* Expenses */}
         <div className="card">
-          {tLoading ? (<><Sk w="40%" h={12} /><Sk w="70%" h={30} style={{ marginTop: 14 }} /><Sk w="100%" h={30} style={{ marginTop: 18 }} /></>) : (
+          {tLoading ? (<><Skeleton className="h-[12px] w-[40%]" /><Skeleton className="mt-3.5 h-[30px] w-[70%]" /><Skeleton className="mt-[18px] h-[30px] w-full" /></>) : (
             <>
               <div className="eyebrow">Despesas do mês</div>
               <div style={{ marginTop: 12 }}>
-                <Money value={kpis.expense} style={{ fontSize: 'clamp(18px, 2vw, 27px)', fontWeight: 700, letterSpacing: '-.02em' }} />
+                <Money value={monthExpense} style={{ fontSize: 'clamp(18px, 2vw, 27px)', fontWeight: 700, letterSpacing: '-.02em' }} />
               </div>
               <div style={{ marginTop: 16 }}><Sparkline data={expenseSparkData} color="var(--neg)" /></div>
             </>
@@ -255,7 +269,7 @@ export default function Dashboard() {
         </div>
 
         {/* Credit util */}
-        {loading ? <div className="card"><Sk w="40%" h={12} /><Sk w="60%" h={30} style={{ marginTop: 14 }} /><Sk w="100%" h={10} r={99} style={{ marginTop: 20 }} /></div> : (
+        {loading ? <div className="card"><Skeleton className="h-[12px] w-[40%]" /><Skeleton className="mt-3.5 h-[30px] w-[60%]" /><Skeleton className="mt-5 h-[10px] w-full rounded-full" /></div> : (
           <div className="card">
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span className="eyebrow">Utilização de crédito</span>
@@ -276,33 +290,50 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* ACCOUNT RAIL */}
+      {/* ACCOUNTS */}
       <div className="card">
-        <SectionHead title="Suas contas" sub={accounts.length + ' conectadas'} right={<button className="btn" onClick={() => navigate('/contas')}>Ver todas <ChevR /></button>} />
+        <SectionHead title="Suas contas" sub={checkingAccounts.length + (checkingAccounts.length !== 1 ? ' contas' : ' conta')} right={<button className="btn" onClick={() => navigate('/contas')}>Ver todas <ChevR /></button>} />
         {loading ? (
-          <div className="acct-rail">{[1,2,3,4].map((i) => <div key={i} className="acct-card"><Sk w="60%" h={14} /><Sk w="80%" h={26} style={{ marginTop: 24 }} /></div>)}</div>
+          <div className="acct-rail">{[1,2,3,4].map((i) => <div key={i} className="acct-card"><Skeleton className="h-[14px] w-[60%]" /><Skeleton className="mt-6 h-[26px] w-[80%]" /></div>)}</div>
+        ) : checkingAccounts.length === 0 ? (
+          <p className="faint" style={{ fontSize: 13 }}>Nenhuma conta com saldo.</p>
         ) : (
           <div style={{ position: 'relative' }}>
             <div className="acct-rail">
-              {accounts.map((a) => <AccountMiniCard key={a.id} a={a} privacyMode={privacyMode} />)}
+              {checkingAccounts.map((a) => <AccountMiniCard key={a.id} a={a} privacyMode={privacyMode} />)}
             </div>
-            {accounts.length > 3 && (
+            {checkingAccounts.length > 3 && (
               <div style={{ position: 'absolute', right: 0, top: 0, bottom: 14, width: 60, background: 'linear-gradient(to right, transparent, var(--surface))', pointerEvents: 'none', borderRadius: '0 var(--r-lg) var(--r-lg) 0' }} />
             )}
           </div>
         )}
       </div>
 
+      {/* CREDIT CARDS */}
+      {!loading && creditCards.length > 0 && (
+        <div className="card">
+          <SectionHead title="Cartões de crédito" sub={creditCards.length + (creditCards.length !== 1 ? ' cartões' : ' cartão')} right={<button className="btn" onClick={() => navigate('/cartao-credito')}>Ver todos <ChevR /></button>} />
+          <div style={{ position: 'relative' }}>
+            <div className="acct-rail">
+              {creditCards.map((a) => <AccountMiniCard key={a.id} a={a} privacyMode={privacyMode} />)}
+            </div>
+            {creditCards.length > 3 && (
+              <div style={{ position: 'absolute', right: 0, top: 0, bottom: 14, width: 60, background: 'linear-gradient(to right, transparent, var(--surface))', pointerEvents: 'none', borderRadius: '0 var(--r-lg) var(--r-lg) 0' }} />
+            )}
+          </div>
+        </div>
+      )}
+
       {/* CASHFLOW + UPCOMING */}
       <div className="g-wide-l">
         <div className="card">
           <SectionHead title="Fluxo de caixa" sub="6 meses" right={<div style={{ display: 'flex', gap: 14 }}><Legend color="var(--pos)" label="Entradas" /><Legend color="var(--neg)" label="Saídas" /></div>} />
-          {tLoading ? <Sk w="100%" h={220} /> : <CashflowTideChart transactions={transactions} />}
+          {tLoading ? <Skeleton className="h-[220px] w-full" /> : <CashflowTideChart transactions={transactions} endMonth={selectedMonth} />}
         </div>
         <div className="card">
           <SectionHead title="Próximas faturas" right={<button className="btn" onClick={() => navigate('/faturas')}>Faturas <ChevR /></button>} />
           <div style={{ display: 'grid', gap: 10 }}>
-            {bLoading ? [1,2,3].map((i) => <Sk key={i} w="100%" h={62} r={14} />) : upcomingBills.length === 0 ? (
+            {bLoading ? [1,2,3].map((i) => <Skeleton key={i} className="h-[62px] w-full rounded-[14px]" />) : upcomingBills.length === 0 ? (
               <p className="faint" style={{ fontSize: 13 }}>Nenhuma fatura próxima</p>
             ) : upcomingBills.map((b) => {
               const days = b.due_date ? differenceInDays(parseISO(b.due_date), new Date()) : 0
@@ -333,14 +364,18 @@ export default function Dashboard() {
       {/* RECENT TX + BILL EVOLUTION */}
       <div className="g-wide-r">
         <div className="card">
-          <SectionHead title="Últimas transações" right={<button className="btn" onClick={() => navigate('/transacoes')}>Ver tudo <ChevR /></button>} />
+          <SectionHead title="Transações do mês" sub={monthLabel} right={<button className="btn" onClick={() => navigate('/transacoes')}>Ver tudo <ChevR /></button>} />
           <div style={{ display: 'grid', gap: 2 }}>
-            {tLoading ? [1,2,3,4,5].map((i) => <Sk key={i} w="100%" h={44} r={10} />) : recentTx.map((t) => <TxRow key={t.id} t={t} privacyMode={privacyMode} />)}
+            {tLoading
+              ? [1,2,3,4,5].map((i) => <Skeleton key={i} className="h-[44px] w-full rounded-[10px]" />)
+              : recentTx.length === 0
+                ? <p className="faint" style={{ fontSize: 13, padding: '8px 8px' }}>Nenhuma transação neste mês</p>
+                : recentTx.map((t) => <TxRow key={t.id} t={t} privacyMode={privacyMode} />)}
           </div>
         </div>
         <div className="card">
           <SectionHead title="Evolução das faturas" sub="12 meses" right={<div style={{ display: 'flex', gap: 14 }}>{billSeries.map((s) => <Legend key={s.label} color={s.color} label={s.label} />)}</div>} />
-          {bLoading ? <Sk w="100%" h={230} /> : <LineMultiChart series={billSeries} months={monthLabels} />}
+          {bLoading ? <Skeleton className="h-[230px] w-full" /> : <LineMultiChart series={billSeries} months={monthLabels} />}
         </div>
       </div>
     </div>
@@ -356,19 +391,19 @@ function AccountMiniCard({ a, privacyMode }) {
     <div className="acct-card">
       <div className="glow" style={{ background: meta.color }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 9, fontWeight: 600, fontSize: 13.5, position: 'relative' }}>
-        <span className="bank-dot" style={{ background: meta.color, width: 11, height: 11 }} />{meta.label}
+        <BankDot bank={a.bank_name ?? a.bank} size={11} />{meta.label}
       </div>
       <div className="faint" style={{ fontSize: 11, marginTop: 2 }}>{isCredit ? 'Cartão de crédito' : 'Conta corrente'}</div>
       <div style={{ marginTop: 26 }}>
         <div className="faint" style={{ fontSize: 11 }}>{isCredit ? 'Fatura atual' : 'Saldo'}</div>
-        <span className={'money' + (privacyMode ? ' blurred' : '')} style={{ fontSize: 23, fontWeight: 700 }}>{formatCurrency(balance)}</span>
+        <Money value={balance} style={{ fontSize: 23, fontWeight: 700 }} />
       </div>
       {isCredit && (
         <div style={{ marginTop: 14 }}>
           <div className="ubar"><i style={{ width: util + '%', background: util > 70 ? 'var(--neg)' : meta.color }} /></div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 7 }} className="faint">
             <span style={{ fontSize: 11 }}>{util.toFixed(0)}% usado</span>
-            <span style={{ fontSize: 11 }}>livre <span className={'money' + (privacyMode ? ' blurred' : '')}>{formatCurrency((a.limit ?? 0) - balance)}</span></span>
+            <span style={{ fontSize: 11 }}>livre <Money value={(a.limit ?? 0) - balance} /></span>
           </div>
         </div>
       )}
@@ -376,9 +411,8 @@ function AccountMiniCard({ a, privacyMode }) {
   )
 }
 
-function TxRow({ t, privacyMode }) {
+function TxRow({ t }) {
   const isInflow = (t.amount ?? 0) > 0
-  const meta = getBankMeta(t.bank ?? '')
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 8px', borderRadius: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
@@ -388,15 +422,24 @@ function TxRow({ t, privacyMode }) {
           </svg>
         </span>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.description}</div>
+          <div style={{ fontSize: 13.5, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {t.description}
+            {t.installment_number && t.installment_total && (
+              <span className="ml-2 text-[9px] text-muted-foreground font-mono bg-[var(--surface-3)] px-1 rounded align-middle">
+                {t.installment_number}/{t.installment_total}
+              </span>
+            )}
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, marginTop: 2 }} className="faint">
             <BankDot bank={t.bank} />{t.bank} · {t.date ? formatDate(t.date, 'dd/MM') : ''}
           </div>
         </div>
       </div>
-      <span className={'money ' + (privacyMode ? 'blurred ' : '')} style={{ fontSize: 14, fontWeight: 600, color: isInflow ? 'var(--pos)' : 'var(--text)', whiteSpace: 'nowrap', flexShrink: 0, paddingLeft: 10 }}>
-        {isInflow ? '+' : ''}{formatCurrency(Math.abs(t.amount ?? 0))}
-      </span>
+      <Money 
+        value={Math.abs(t.amount ?? 0)} 
+        style={{ fontSize: 14, fontWeight: 600, color: isInflow ? 'var(--pos)' : 'var(--text)', whiteSpace: 'nowrap', flexShrink: 0, paddingLeft: 10 }}
+        showSymbol={false}
+      />
     </div>
   )
 }

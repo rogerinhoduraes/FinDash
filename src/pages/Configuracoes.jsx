@@ -1,19 +1,17 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { useEtlRuns } from '@/hooks/useEtlRuns'
+import { useTransactions } from '@/hooks/useTransactions'
+import { useCustomCategories } from '@/hooks/useCustomCategories'
+import { useExcludedCategories } from '@/hooks/useExcludedCategories'
 import { db, auth } from '@/lib/firebase'
 import { doc, setDoc } from 'firebase/firestore'
 import { updateProfile } from 'firebase/auth'
-import { formatDate } from '@/lib/formatters'
+import { formatDate, translateCategory } from '@/lib/formatters'
 import useFinanceStore from '@/store/useFinanceStore'
-
-function getBankColor(bank) {
-  const b = (bank ?? '').toLowerCase()
-  if (b.includes('nubank')) return 'var(--nubank)'
-  if (b.includes('santander')) return 'var(--santander)'
-  if (b.includes('inter')) return 'var(--inter)'
-  return 'var(--text-faint)'
-}
+import { SectionHead } from '@/components/ui/SectionHead'
+import { BankDot } from '@/components/ui/BankDot'
+import { Skeleton } from '@/components/ui/skeleton'
 
 function Pref({ label, desc, on, onClick }) {
   return (
@@ -43,13 +41,19 @@ export default function Configuracoes() {
   const uid = user?.uid
   const { runs, loading: runsLoading } = useEtlRuns(uid, 20)
   const { theme, toggleTheme, privacyMode, togglePrivacy } = useFinanceStore()
+  // includeExcluded so we can still see / count categories that are already hidden
+  const { transactions } = useTransactions(uid, { maxDocs: 10000, includeExcluded: true })
+  const { customCategories } = useCustomCategories(uid)
+  const { excludedCategories, addExcluded, removeExcluded } = useExcludedCategories(uid)
   const [displayName, setDisplayName] = useState(user?.displayName ?? '')
   const [saving, setSaving] = useState(false)
+  const [pickCat, setPickCat] = useState('')
 
   useEffect(() => {
     if (user?.displayName && !displayName) setDisplayName(user.displayName)
   }, [user?.displayName])
   const [syncing, setSyncing] = useState(false)
+  const [normalizing, setNormalizing] = useState(false)
   const [msg, setMsg] = useState('')
 
   async function saveProfile() {
@@ -66,109 +70,169 @@ export default function Configuracoes() {
     setSyncing(true); setMsg('')
     try {
       const token = await auth.currentUser.getIdToken()
-      const res = await fetch('https://forceetl-lp2z3bmcqa-uc.a.run.app', {
+      const baseUrl = import.meta.env.VITE_FIREBASE_FUNCTIONS_URL || `https://us-central1-${import.meta.env.VITE_FIREBASE_PROJECT_ID}.cloudfunctions.net`
+      const res = await fetch(`${baseUrl}/forceEtl`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       })
       const data = await res.json().catch(() => ({}))
-      setMsg(res.ok ? (data.message ?? 'Solicitação enviada. Dados serão atualizados em breve.') : 'Erro ao acionar. Tente via GitHub Actions.')
-    } catch { setMsg('Erro de rede. ETL atualiza automaticamente a cada hora.') }
+      setMsg(res.ok ? (data.message || 'Solicitação enviada. Dados serão atualizados em breve.') : 'Erro ao acionar.')
+    } catch { setMsg('Erro de rede.') }
     finally { setSyncing(false) }
   }
 
-  const successRuns = runs.filter((r) => r.status === 'success').length
-  const latestRun = runs[0]
-  const latestTime = latestRun?.startedAt
-  const latestLabel = latestTime ? formatDate(latestTime?.toDate ? latestTime.toDate() : new Date(latestTime), 'dd/MM HH:mm') : '--:--'
+  async function runNormalization() {
+    if (!confirm('Deseja normalizar todo o banco de dados? Isso aplicará as regras mais recentes de nomes de bancos e metadados a registros antigos.')) return
+    setNormalizing(true); setMsg('')
+    try {
+      const token = await auth.currentUser.getIdToken()
+      const baseUrl = import.meta.env.VITE_FIREBASE_FUNCTIONS_URL || `https://us-central1-${import.meta.env.VITE_FIREBASE_PROJECT_ID}.cloudfunctions.net`
+      const res = await fetch(`${baseUrl}/normalizeDatabase`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        setMsg(`Sucesso! ${data.stats.transactions} transações, ${data.stats.accounts} contas e ${data.stats.bills} faturas normalizadas.`)
+      } else {
+        setMsg('Erro na normalização: ' + (data.error || 'Erro desconhecido'))
+      }
+    } catch { setMsg('Erro de rede ao normalizar.') }
+    finally { setNormalizing(false) }
+  }
+
+  // Count transactions per category (across the whole base) for the picker + chips
+  const catCounts = useMemo(() => {
+    const m = new Map()
+    for (const t of transactions) {
+      const c = t.category || 'Others'
+      m.set(c, (m.get(c) ?? 0) + 1)
+    }
+    return m
+  }, [transactions])
+
+  // Every category the user could exclude: those present in transactions + custom ones
+  const allCategories = useMemo(() => {
+    const set = new Set(catCounts.keys())
+    customCategories.forEach((c) => set.add(c.key))
+    return [...set]
+      .map((key) => ({ key, label: translateCategory(key), count: catCounts.get(key) ?? 0 }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'pt', { sensitivity: 'base' }))
+  }, [catCounts, customCategories])
+
+  const stats = useMemo(() => {
+    const s = { checking: 0, credit: 0, items: 0 }
+    for (const r of runs) {
+      s.checking += (r.stats?.accounts?.checked ?? 0)
+      s.credit += (r.stats?.credit_cards?.checked ?? 0)
+      s.items += (r.stats?.transactions?.added ?? 0)
+    }
+    return s
+  }, [runs])
 
   return (
-    <div className="stagger g-split" style={{ alignItems: 'start' }}>
-      <div style={{ display: 'grid', gap: 18 }}>
-        {/* Profile */}
+    <div className="fade-in grid gap-[22px]">
+      <SectionHead title="Configurações" sub="Perfil e preferências do sistema" />
+
+      <div className="g-wide-l">
         <div className="card">
-          <div className="section-head" style={{ marginBottom: 18 }}>
-            <span className="section-title">Perfil</span>
+          <SectionHead title="Preferências" />
+          <div style={{ display: 'grid', gap: 20, marginTop: 12 }}>
+            <Pref label="Tema Escuro" desc="Premium charcoal e oklch colors" on={theme === 'dark'} onClick={toggleTheme} />
+            <Pref label="Modo Privacidade" desc="Oculta valores financeiros com desfoque" on={privacyMode} onClick={togglePrivacy} />
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18 }}>
-            <div style={{ width: 54, height: 54, borderRadius: 16, background: 'linear-gradient(135deg,var(--nubank),var(--inter))', display: 'grid', placeItems: 'center', color: 'white', fontWeight: 700, fontSize: 18, fontFamily: 'var(--font-display)', flexShrink: 0 }}>
-              {displayName.split(' ').map((s) => s[0]).slice(0, 2).join('')}
-            </div>
-            <div>
-              <div style={{ fontWeight: 600 }}>{user?.displayName || displayName}</div>
-              <div className="faint" style={{ fontSize: 12.5 }}>{user?.email}</div>
-            </div>
-          </div>
-          <label className="eyebrow" style={{ display: 'block', marginBottom: 8 }}>Nome de exibição</label>
-          <input className="fd-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-          {msg && <div className="faint" style={{ fontSize: 12.5, marginTop: 8, color: 'var(--pos)' }}>{msg}</div>}
-          <button className="btn primary" style={{ marginTop: 14, width: '100%' }} onClick={saveProfile} disabled={saving || !displayName.trim() || displayName === (user?.displayName ?? '')}>
-            {saving ? 'Salvando…' : 'Salvar alterações'}
-          </button>
         </div>
 
-        {/* Prefs */}
         <div className="card">
-          <div className="section-head" style={{ marginBottom: 16 }}>
-            <span className="section-title">Preferências</span>
+          <SectionHead title="Perfil" />
+          <div style={{ display: 'grid', gap: 14, marginTop: 14 }}>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <span className="eyebrow">Nome de exibição</span>
+              <input className="fd-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Seu nome" />
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <span className="eyebrow">E-mail</span>
+              <input className="fd-input" value={user?.email ?? ''} disabled style={{ opacity: 0.5 }} />
+            </div>
+            <div style={{ marginTop: 6 }}>
+              <button className="btn primary px-8" disabled={saving} onClick={saveProfile}>{saving ? 'Salvando...' : 'Salvar Alterações'}</button>
+              {msg && <span style={{ marginLeft: 16, fontSize: 13, color: msg.includes('Erro') ? 'var(--neg)' : 'var(--pos)' }}>{msg}</span>}
+            </div>
           </div>
-          <div style={{ display: 'grid', gap: 16 }}>
-            <Pref label="Tema escuro" desc="Persistido entre sessões" on={theme === 'dark'} onClick={toggleTheme} />
-            <div style={{ height: 1, background: 'var(--border)' }} />
-            <Pref label="Modo privacidade" desc="Oculta todos os valores monetários" on={privacyMode} onClick={togglePrivacy} />
+        </div>
+
+        <div className="card">
+          <SectionHead title="Exclusão de Categorias" sub="Ocultar do sistema" />
+          <p className="faint" style={{ fontSize: 13, lineHeight: 1.6 }}>Transações nestas categorias serão ignoradas em todos os cálculos e gráficos (Dashboard, Análise, etc). Útil para remover transferências internas ou categorias ruidosas.</p>
+          
+          <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+            <select className="fd-select" value={pickCat} onChange={(e) => setPickCat(e.target.value)}>
+              <option value="">Selecione uma categoria para excluir...</option>
+              {allCategories.filter(c => !excludedCategories.includes(c.key)).map(c => (
+                <option key={c.key} value={c.key}>{c.label} ({c.count} txs)</option>
+              ))}
+            </select>
+            <button className="btn" disabled={!pickCat} onClick={() => { addExcluded(pickCat); setPickCat('') }}>Excluir</button>
+          </div>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
+            {excludedCategories.length === 0 ? (
+              <span className="faint" style={{ fontSize: 12, fontStyle: 'italic' }}>Nenhuma categoria excluída.</span>
+            ) : excludedCategories.map(key => (
+              <span key={key} className="chip" style={{ background: 'var(--surface-3)', padding: '6px 12px', fontSize: 12 }}>
+                {translateCategory(key)}
+                <button style={{ marginLeft: 8, background: 'none', border: 'none', color: 'var(--neg)', cursor: 'pointer', fontWeight: 800 }} onClick={() => removeExcluded(key)}>×</button>
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="card">
+          <SectionHead title="Manutenção do Banco" sub="Limpeza e normalização" />
+          <p className="faint" style={{ fontSize: 13, lineHeight: 1.6 }}>Corrige nomes de bancos, extrai metadados de parcelas faltantes e atualiza as chaves de mercadores em registros antigos.</p>
+          <div style={{ marginTop: 18 }}>
+            <button className="btn h-10 px-6" disabled={normalizing} onClick={runNormalization}>
+              {normalizing ? 'Normalizando...' : 'Normalizar Base Histórica'}
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Sync + ETL log */}
       <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 18 }}>Sincronização de dados</h2>
-            <div className="faint" style={{ fontSize: 12.5, marginTop: 3 }}>Pipeline ETL via Pluggy Open Finance · 3 bancos</div>
-          </div>
-          <button className="btn primary" onClick={forceEtl} disabled={syncing} style={{ flexShrink: 0 }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ width: 15, height: 15 }} className={syncing ? 'spin' : ''}><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
-            {syncing ? 'Sincronizando…' : 'Sincronizar agora'}
-          </button>
+        <SectionHead title="Pipeline Open Finance" sub="Status do ETL" 
+          right={<button className="btn h-8" disabled={syncing} onClick={forceEtl}>{syncing ? 'Acionando...' : 'Sincronizar agora'}</button>} />
+        
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
+          <MiniStat lbl="Contas" val={stats.checking} />
+          <MiniStat lbl="Cartões" val={stats.credit} />
+          <MiniStat lbl="Novos itens" val={stats.items} color="var(--accent)" />
         </div>
 
-        <div className="g-3" style={{ gap: 12, marginBottom: 18 }}>
-          <MiniStat lbl="Última execução" val={latestLabel} />
-          <MiniStat lbl="Execuções recentes" val={runs.length} />
-          <MiniStat lbl="Taxa de sucesso" val={runs.length ? Math.round(successRuns / runs.length * 100) + '%' : '—'} color="var(--pos)" />
-        </div>
-
-        <div className="eyebrow" style={{ marginBottom: 10 }}>Histórico de execuções</div>
-        {runsLoading ? (
-          <div style={{ display: 'grid', gap: 8 }}>{[1,2,3].map((i) => <div key={i} className="sk" style={{ height: 44, borderRadius: 8 }} />)}</div>
-        ) : (
+        <div className="eyebrow mb-3">Histórico de execuções</div>
+        <div className="overflow-x-auto" style={{ border: '1px solid var(--border)', borderRadius: 12 }}>
           <table className="tbl">
-            <thead><tr><th>Início</th><th>Banco</th><th>Status</th><th className="num">Transações</th></tr></thead>
+            <thead><tr><th>Início</th><th className="num">Duração</th><th>Status</th><th>Bancos</th></tr></thead>
             <tbody>
-              {runs.map((r, i) => {
-                const t = r.startedAt?.toDate ? r.startedAt.toDate() : r.startedAt ? new Date(r.startedAt) : null
-                return (
-                  <tr key={r.id ?? i}>
-                    <td className="mono faint" style={{ whiteSpace: 'nowrap', fontSize: 12.5 }}>{t ? formatDate(t, 'dd/MM HH:mm') : '—'}</td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13 }}>
-                        <span className="bank-dot" style={{ background: getBankColor(r.bank) }} />{r.bank ?? '—'}
-                      </div>
-                    </td>
-                    <td>
-                      {r.status === 'success'
-                        ? <span className="badge-st paid">sucesso</span>
-                        : <span className="badge-st div">erro</span>
-                      }
-                    </td>
-                    <td className="num mono">{r.counts?.transactions ?? '—'}</td>
-                  </tr>
-                )
-              })}
-              {runs.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', padding: 24, color: 'var(--text-faint)' }}>Nenhuma execução encontrada</td></tr>}
+              {runsLoading ? [1,2,3].map(i => <tr key={i}><td colSpan={4}><Skeleton className="h-6 w-full" /></td></tr>) : 
+               runs.map(r => (
+                <tr key={r.id}>
+                  <td className="mono faint">{formatDate(r.startedAt, 'dd/MM HH:mm')}</td>
+                  <td className="num mono faint">{Math.round((r.finishedAt?.seconds - r.startedAt?.seconds) || 0)}s</td>
+                  <td><span className={'badge-st ' + (r.status === 'COMPLETED' ? 'paid' : 'open')}>{r.status === 'COMPLETED' ? 'Sucesso' : 'Erro'}</span></td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {(r.banks || []).map(b => (
+                        <BankDot key={b} bank={b} size={8} />
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!runsLoading && runs.length === 0 && (
+                <tr><td colSpan={4}><p className="faint" style={{ fontSize: 13 }}>Nenhuma execução registrada.</p></td></tr>
+              )}
             </tbody>
           </table>
-        )}
+        </div>
       </div>
     </div>
   )

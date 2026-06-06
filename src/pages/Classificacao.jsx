@@ -204,10 +204,13 @@ export default function Classificacao() {
   }
 
   if (loading) return (
-    <div className="grid gap-6">
-      <Skeleton className="h-16 w-full" />
-      <Skeleton className="h-12 w-48" />
-      <Skeleton className="h-96 w-full" />
+    <div className="fade-in grid gap-[22px]">
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-[44px] w-[40%] rounded-[10px]" />
+        <Skeleton className="h-[40px] w-[280px] rounded-[14px]" />
+      </div>
+      <Skeleton className="h-[64px] w-full rounded-[14px]" />
+      <Skeleton className="h-[460px] w-full rounded-[14px]" />
     </div>
   )
 
@@ -217,18 +220,18 @@ export default function Classificacao() {
         title="Classificação" 
         sub={`${uncategorizedCount} pendentes`}
         right={
-          <div className="tabs-mini">
-            <button className={tab === 'transactions' ? 'active' : ''} onClick={() => setTab('transactions')}>Transações</button>
-            <button className={tab === 'rules' ? 'active' : ''} onClick={() => setTab('rules')}>Regras ({rules.length})</button>
-            <button className={tab === 'categories' ? 'active' : ''} onClick={() => setTab('categories')}>Categorias</button>
+          <div className="tab-row">
+            <button className={`tab ${tab === 'transactions' ? 'active' : ''}`} onClick={() => setTab('transactions')}>Transações</button>
+            <button className={`tab ${tab === 'rules' ? 'active' : ''}`} onClick={() => setTab('rules')}>Regras ({rules.length})</button>
+            <button className={`tab ${tab === 'categories' ? 'active' : ''}`} onClick={() => setTab('categories')}>Categorias</button>
           </div>
         }
       />
 
       {tab === 'transactions' && (
         <>
-          <div className="card p-4">
-            <div className="filter-grid" style={{ gridTemplateColumns: '1fr auto auto auto auto' }}>
+          <div className="card">
+            <div className="filter-grid">
               <div className="search-wrap">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
                 <input className="fd-input" placeholder="Buscar por descrição…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(0) }} />
@@ -250,14 +253,15 @@ export default function Classificacao() {
             </div>
           </div>
 
-          <div className="card p-2">
+          <div className="card p-0 overflow-hidden">
+            <div className="overflow-x-auto">
             <table className="tbl">
               <thead>
                 <tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Banco</th><th className="num">Valor</th></tr>
               </thead>
               <tbody>
                 {rows.length === 0 ? (
-                  <tr><td colSpan={5} className="py-20 text-center text-muted-foreground">Nenhuma transação pendente. Bom trabalho!</td></tr>
+                  <tr><td colSpan={5} className="py-10 text-center text-muted-foreground opacity-50">Nenhuma transação pendente. Bom trabalho!</td></tr>
                 ) : rows.map(t => {
                   const displayCat = optimistic[t.id] ?? t.category
                   const isPending = needsClassification(displayCat)
@@ -294,6 +298,7 @@ export default function Classificacao() {
                 })}
               </tbody>
             </table>
+            </div>
             <div className="flex justify-between items-center p-3.5 border-t border-[var(--border)]">
               <span className="text-[11px] text-muted-foreground">{filtered.length} resultados · pág {page+1} de {pages}</span>
               <div className="flex gap-2">
@@ -306,13 +311,13 @@ export default function Classificacao() {
       )}
 
       {tab === 'rules' && (
-        <div className="grid gap-6">
-          <div className="card p-4 flex justify-between items-center">
-            <div>
-              <h3 className="font-bold">Regras de Automação</h3>
-              <p className="text-xs text-muted-foreground">Padrões de texto que classificam transações automaticamente.</p>
-            </div>
-            <button className="btn primary" onClick={() => { setEditingRuleId('new'); setRuleDraft({ pattern: '', category: 'Food and Groceries' }) }}>Nova Regra</button>
+        <div className="grid gap-[22px]">
+          <div className="card">
+            <SectionHead
+              title="Regras de Automação"
+              sub="padrões de texto que classificam transações automaticamente"
+              right={<button className="btn primary" onClick={() => { setEditingRuleId('new'); setRuleDraft({ pattern: '', category: 'Food and Groceries' }) }}>Nova Regra</button>}
+            />
           </div>
 
           <div className="grid gap-3">
@@ -361,7 +366,7 @@ export default function Classificacao() {
       )}
 
       {tab === 'categories' && (
-        <div className="grid md:grid-cols-2 gap-6">
+        <div className="g-2">
           <div className="card">
             <SectionHead title="Nova Categoria" />
             <div className="flex gap-2 mt-4">
@@ -377,7 +382,7 @@ export default function Classificacao() {
             <SectionHead title="Suas Categorias" sub={customCategories.length} />
             <div className="grid gap-2 mt-4">
               {customCategories.length === 0 ? (
-                <div className="py-10 text-center text-muted-foreground text-sm italic">Nenhuma categoria personalizada criada.</div>
+                <div className="py-10 text-center text-muted-foreground opacity-50">Nenhuma categoria personalizada criada.</div>
               ) : customCategories.map(c => (
                 <div key={c.key} className="flex justify-between items-center p-3 rounded-xl bg-[var(--surface-2)] border border-[var(--border)]">
                   <span className="font-semibold text-sm">{c.label}</span>
@@ -407,8 +412,9 @@ export default function Classificacao() {
 
       {/* Toast Notification */}
       {toast && (
-        <div className={`fixed bottom-8 right-8 z-[300] px-4 py-3 rounded-xl shadow-xl border flex items-center gap-3 animate-fade-in ${toast.ok ? 'bg-emerald-900/90 border-emerald-500 text-emerald-100' : 'bg-red-900/90 border-red-500 text-red-100'}`}>
-          <div className={`h-2 w-2 rounded-full ${toast.ok ? 'bg-emerald-400' : 'bg-red-400'}`} />
+        <div className="fixed bottom-8 right-8 z-[300] px-4 py-3 rounded-xl shadow-xl border flex items-center gap-3 animate-fade-in"
+          style={{ background: toast.ok ? 'var(--pos-dim)' : 'var(--neg-dim)', borderColor: toast.ok ? 'var(--pos)' : 'var(--neg)', color: toast.ok ? 'var(--pos)' : 'var(--neg)' }}>
+          <div className="h-2 w-2 rounded-full" style={{ background: toast.ok ? 'var(--pos)' : 'var(--neg)' }} />
           <span className="text-sm font-bold">{toast.msg}</span>
           <button className="ml-2 opacity-60 hover:opacity-100" onClick={() => setToast(null)}>✕</button>
         </div>
@@ -471,7 +477,7 @@ export default function Classificacao() {
           <div className="overflow-y-auto pr-1 flex-1">
             <div className="grid gap-2">
               {modalTxs.length === 0 ? (
-                <div className="py-20 text-center text-muted-foreground text-sm">Nenhuma transação disponível para este critério.</div>
+                <div className="py-10 text-center text-muted-foreground opacity-50">Nenhuma transação disponível para este critério.</div>
               ) : modalTxs.map(t => {
                 const isSelected = modalSelected.has(t.id)
                 return (
