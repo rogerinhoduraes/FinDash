@@ -19,6 +19,12 @@ function statusInfo(status) {
 
 const INSTALLMENT_RE = /\b\d+\s*\/\s*\d+\b|PARC\b|PARCELA\b/i
 
+// A transaction is an installment if the ETL captured the structured fields
+// (creditCardMetadata — the reliable signal, e.g. Santander, whose description
+// carries no "3/10"), OR, as a fallback, the description itself spells it out.
+const isInstallment = (t) =>
+  Boolean(t.installment_number && t.installment_total) || INSTALLMENT_RE.test(t.description ?? '')
+
 function BillModal({ bill, uid, onClose }) {
   const meta = getBankMeta(bill.bank ?? '')
   const today = new Date().toISOString().slice(0, 10)
@@ -50,12 +56,12 @@ function BillModal({ bill, uid, onClose }) {
         (t.bank ?? '').toLowerCase().includes((bill.bank ?? '').toLowerCase()) && (t.amount ?? 0) < 0
       )
     }
-    if (isFuture) matched = matched.filter((t) => INSTALLMENT_RE.test(t.description ?? ''))
+    if (isFuture) matched = matched.filter(isInstallment)
     return matched.sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
   }, [transactions, bill.bill_id, bill.id, bill.account_id, bill.bank, isFuture])
 
-  const regular      = billTxs.filter((t) => !INSTALLMENT_RE.test(t.description ?? ''))
-  const installments = billTxs.filter((t) =>  INSTALLMENT_RE.test(t.description ?? ''))
+  const regular      = billTxs.filter((t) => !isInstallment(t))
+  const installments = billTxs.filter(isInstallment)
 
   return (
     <div className="modal-back" onClick={onClose}>
