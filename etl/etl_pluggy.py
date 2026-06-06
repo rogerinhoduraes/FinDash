@@ -310,6 +310,13 @@ def normalize_transaction(tx: dict, bank_name: str, account_id: str, account_typ
             installment_number = int(match.group(1))
             installment_total  = int(match.group(2))
 
+    # [CCDBG] DIAGNÓSTICO TEMPORÁRIO — mostra o formato real de parcelamento por banco.
+    if account_type == "CREDIT":
+        log.info(
+            f"[CCDBG] bank={bank_name} parc={installment_number}/{installment_total} "
+            f"desc={desc!r} cc_meta={str(cc_meta)[:400]!r} top_keys={list(tx.keys())}"
+        )
+
     return {
         "transaction_id":      tx.get("id"),
         "bank":                bank_name,
