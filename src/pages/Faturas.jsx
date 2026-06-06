@@ -3,6 +3,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useBills } from '@/hooks/useBills'
 import { useTransactions } from '@/hooks/useTransactions'
 import { formatDate, getBankMeta, translateCategory } from '@/lib/formatters'
+import { isInstallment } from '@/lib/categories'
 import { differenceInDays, parseISO, format, subMonths, subDays } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { LineMultiChart } from '@/components/charts/LineMultiChart'
@@ -16,14 +17,6 @@ function statusInfo(status) {
   if (status === 'DIVERGENCE' || status === 'DIVERGÊNCIA') return ['div', 'Divergência']
   return ['open', 'Aberta']
 }
-
-const INSTALLMENT_RE = /\b\d+\s*\/\s*\d+\b|PARC\b|PARCELA\b/i
-
-// A transaction is an installment if the ETL captured the structured fields
-// (creditCardMetadata — the reliable signal, e.g. Santander, whose description
-// carries no "3/10"), OR, as a fallback, the description itself spells it out.
-const isInstallment = (t) =>
-  Boolean(t.installment_number && t.installment_total) || INSTALLMENT_RE.test(t.description ?? '')
 
 function BillModal({ bill, uid, onClose }) {
   const meta = getBankMeta(bill.bank ?? '')
